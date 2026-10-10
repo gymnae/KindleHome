@@ -1,0 +1,8 @@
+services:
+  kindle-vikunja:
+    build: .
+    container_name: kindle-vikunja
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"

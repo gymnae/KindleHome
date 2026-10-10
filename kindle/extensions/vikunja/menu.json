@@ -1,0 +1,13 @@
+{
+  "items": [
+    {
+      "name": "Vikunja Todo",
+      "priority": 0,
+      "items": [
+        {"name": "Start todo display", "priority": 1, "action": "/bin/sh", "params": "/mnt/us/extensions/vikunja/bin/start.sh", "exitmenu": true},
+        {"name": "Reload page", "priority": 2, "action": "/bin/sh", "params": "/mnt/us/extensions/vikunja/bin/reload.sh", "exitmenu": true},
+        {"name": "Stop (allow sleep again)", "priority": 3, "action": "/bin/sh", "params": "/mnt/us/extensions/vikunja/bin/stop.sh", "exitmenu": true}
+      ]
+    }
+  ]
+}
