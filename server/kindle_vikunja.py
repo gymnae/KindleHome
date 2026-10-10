@@ -801,8 +801,7 @@ ul{list-style:none;margin:0;padding:0}
 .koi{display:inline-block;width:1.4em;margin-right:.3em;font-family:KOItems;font-size:1.3em;line-height:1;text-align:center;vertical-align:middle;font-weight:normal;font-style:normal}
 .tile .koi{font-size:1.1em;width:1.3em}
 #sugg button{display:block;width:100%;margin:0;padding:8px 4px;border:0;border-bottom:1px dotted #000;background:#fff;color:#000;font:inherit;text-align:left;-webkit-appearance:none;border-radius:0}
-#sugg{margin:0 0 8px;border-top:2px solid #000}
-#sugg:empty{display:none}
+#sugg{display:none;margin:0 0 8px;border-top:2px solid #000}
 .note{display:inline-block;min-width:1.6em;padding:2px 4px;text-align:center}
 .plist a{display:block;padding:14px 0;border-bottom:1px solid #000;text-decoration:none}
 .open{display:block;color:#000;text-decoration:none}
@@ -986,7 +985,7 @@ JS = r"""
         if (!ok) { status(errText(r), true); return; }
         $("title").value = "";
         $("title").blur();
-        $("sugg").innerHTML = "";
+        showSugg("");
         lastAct = 0;
         refresh();
       });
@@ -999,7 +998,7 @@ JS = r"""
         if (!ok) { status(errText(r), true); return; }
         title.value = "";
         title.blur();
-        if ($("sugg")) $("sugg").innerHTML = "";
+        showSugg("");
         if (!CFG.list) { location.reload(); return; }
         lastAct = 0;
         refresh();
@@ -1024,21 +1023,32 @@ JS = r"""
     if (t - lastRefresh >= CFG.refresh * 1000) refresh();
   }, 5000);
 
-  // Shopping list autocomplete: poll the input (key events from the Kindle keyboard are unreliable).
+  // Shopping list autocomplete. Shown/hidden from script: old WebKit doesn't re-evaluate
+  // CSS :empty after innerHTML changes. Key events from the Kindle keyboard may not arrive,
+  // so the input is also polled.
+  function showSugg(html) {
+    var box = $("sugg");
+    if (!box) return;
+    box.innerHTML = html;
+    box.style.display = html ? "block" : "none";
+  }
   if (CFG.suggest && $("title")) {
     var lastQ = "", sugTimer = null;
-    setInterval(function () {
+    var checkSugg = function () {
       var q = $("title").value.replace(/^\s+|\s+$/g, "");
       if (q === lastQ) return;
       lastQ = q;
       clearTimeout(sugTimer);
-      if (q.length < 2) { $("sugg").innerHTML = ""; return; }
+      if (q.length < 2) { showSugg(""); return; }
       sugTimer = setTimeout(function () {
         xhr("GET", CFG.suggest + "?q=" + encodeURIComponent(q), null, function (ok, r) {
-          if (ok && $("title").value.replace(/^\s+|\s+$/g, "") === q) $("sugg").innerHTML = r.responseText;
+          if (ok && $("title").value.replace(/^\s+|\s+$/g, "") === q) showSugg(r.responseText);
         });
       }, 300);
-    }, 500);
+    };
+    $("title").addEventListener("keyup", checkSugg, false);
+    $("title").addEventListener("input", checkSugg, false);
+    setInterval(checkSugg, 500);
   }
 
   // Kiosk app (kindle/extensions/vikunja/app): the page runs in a frame there,
