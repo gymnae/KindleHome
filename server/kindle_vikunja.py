@@ -102,6 +102,7 @@ class Config:
         # "position" = the manual (drag and drop) order of Vikunja's list view
         self.sort = env.get("SORT", "position").strip().lower()
         self.font_size = int(env.get("FONT_SIZE", "24"))
+        self.dash_font_size = int(env.get("DASHBOARD_FONT_SIZE", "28"))
         self.lang = env.get("UI_LANG", "en").strip().lower()
         self.list_subtasks = env.get("LIST_SUBTASKS", "0").lower() not in ("0", "false", "no")
         self.home_after = int(env.get("DETAIL_RETURN_SECONDS", "300"))
@@ -788,15 +789,15 @@ ul{list-style:none;margin:0;padding:0}
 .lbl{border:1px solid #000;padding:0 4px}
 .who{font-weight:bold;font-style:italic}
 .empty{padding:40px 0;text-align:center;font-size:1.1em}
-.tile{display:block;margin:0 0 14px;padding:10px 14px 12px;border:3px solid #000;color:#000;text-decoration:none}
+.tile{display:block;margin:0 0 16px;padding:10px 14px 12px;border:3px solid #000;color:#000;text-decoration:none;font-size:%%DFS%%px}
 .tile .th{display:table;width:100%}
-.tile .tt{display:table-cell;font-size:1.25em;font-weight:bold}
-.tile .tc{display:table-cell;text-align:right;font-size:1.1em;font-weight:bold;white-space:nowrap}
-.tile ul{margin:6px 0 0;font-size:.85em}
-.tile li{padding:4px 0;border-top:1px dotted #000;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.tile li .due{font-size:.8em;margin-left:6px}
-.tile .tmore{font-size:.7em;margin-top:4px}
-.tile .terr{font-weight:bold;font-size:.8em;margin-top:6px}
+.tile .tt{display:table-cell;font-size:1.3em;font-weight:bold}
+.tile .tc{display:table-cell;text-align:right;font-size:1.2em;font-weight:bold;white-space:nowrap}
+.tile ul{margin:6px 0 0}
+.tile li{padding:5px 0;border-top:1px dotted #000;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.tile li .due{font-size:.85em;margin-left:8px}
+.tile .tmore{font-size:.8em;margin-top:4px}
+.tile .terr{font-weight:bold;font-size:.9em;margin-top:6px}
 @font-face{font-family:KOItems;src:url(/ko/items.ttf) format("truetype")}
 .koi{display:inline-block;width:1.4em;margin-right:.3em;font-family:KOItems;font-size:1.3em;line-height:1;text-align:center;vertical-align:middle;font-weight:normal;font-style:normal}
 .tile .koi{font-size:1.1em;width:1.3em}
@@ -1093,7 +1094,7 @@ class Renderer:
     # -- building blocks ---------------------------------------------------
 
     def layout(self, title, body, script=""):
-        css = CSS.replace("%%FS%%", str(self.cfg.font_size))
+        css = CSS.replace("%%FS%%", str(self.cfg.font_size)).replace("%%DFS%%", str(self.cfg.dash_font_size))
         return (
             '<!DOCTYPE html><html><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
