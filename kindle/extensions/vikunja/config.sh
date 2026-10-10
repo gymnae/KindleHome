@@ -1,7 +1,8 @@
 # Settings for the Vikunja todo display. Edit, then run "Start todo display" from KUAL.
 
 # Page to show: your kindle-vikunja server (plain http on your LAN).
-# /p/<id> picks the project. If ACCESS_KEY is set on the server, append ?key=<ACCESS_KEY>
+# "/" shows the dashboard (if enabled on the server), /p/<id> a Vikunja project,
+# /shop the KitchenOwl shopping list. If ACCESS_KEY is set on the server, append ?key=<ACCESS_KEY>
 # (only needed once, a cookie remembers it).
 KV_URL="http://192.168.0.31:8080/p/3"
 

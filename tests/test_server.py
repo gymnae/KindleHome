@@ -87,6 +87,7 @@ class FakeVikunja:
                     return self.reply(200, [{"id": 9, "view_kind": "kanban"}, {"id": 10, "view_kind": "list"}])
                 if p == "/api/v1/projects/1/views/10/tasks":
                     assert q["filter"] == ["done = false"], q
+                    fake.last_query = q
                     items = [fake.with_relations(t) for t in fake.tasks.values()
                              if t["project_id"] == 1 and not t["done"]]
                     page, per = int(q["page"][0]), 2  # force pagination
@@ -129,6 +130,84 @@ class FakeVikunja:
         return H
 
 
+class FakeKitchenOwl:
+    """Minimal in-memory imitation of the KitchenOwl API."""
+
+    def __init__(self):
+        self.catalog = {
+            1: {"id": 1, "name": "Milk", "category": {"id": 2, "name": "Dairy", "ordering": 1}},
+            2: {"id": 2, "name": "Apples", "category": {"id": 1, "name": "Fruit", "ordering": 0}},
+            3: {"id": 3, "name": "Soap", "category": None},
+            4: {"id": 4, "name": "Bread <fresh>"},
+        }
+        self.on_list = {1: "2 l", 2: "", 3: ""}   # item id -> description
+        self.recent = [4, 1]                        # recently removed items
+        self.requests = []
+        self.down = False
+
+    def item(self, iid, description=""):
+        return dict(self.catalog[iid], description=description)
+
+    def handler(fake):
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def reply(self, code, data):
+                body = json.dumps(data).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def body(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                return json.loads(self.rfile.read(n)) if n else {}
+
+            def handle_any(self, method):
+                if fake.down:
+                    return self.reply(500, {"msg": "boom"})
+                if self.headers.get("Authorization") != "Bearer ko-secret":
+                    return self.reply(401, {"msg": "Unauthorized"})
+                u = urllib.parse.urlsplit(self.path)
+                body = self.body()
+                fake.requests.append((method, u.path, body))
+                if method == "GET" and u.path == "/api/household":
+                    return self.reply(200, [{"id": 4, "name": "Home"}])
+                if method == "GET" and u.path == "/api/household/4/shoppinglist":
+                    items = [fake.item(i, d) for i, d in fake.on_list.items()]
+                    recent = [fake.item(i) for i in fake.recent]
+                    return self.reply(200, [{"id": 9, "name": "Hardware", "items": [], "recentItems": []},
+                                            {"id": 7, "name": "Groceries", "items": items, "recentItems": recent}])
+                if method == "POST" and u.path == "/api/shoppinglist/7/add-item-by-name":
+                    match = [i for i, it in fake.catalog.items() if it["name"].lower() == body["name"].lower()]
+                    iid = match[0] if match else max(fake.catalog) + 1
+                    fake.catalog.setdefault(iid, {"id": iid, "name": body["name"]})
+                    fake.on_list[iid] = body.get("description", "")
+                    return self.reply(200, fake.item(iid))
+                if method == "DELETE" and u.path == "/api/shoppinglist/7/item":
+                    iid = body["item_id"]
+                    fake.on_list.pop(iid, None)
+                    fake.recent.insert(0, iid)
+                    return self.reply(200, {"msg": "DONE"})
+                m = re.fullmatch(r"/api/shoppinglist/7/item/(\d+)", u.path)
+                if method == "POST" and m:
+                    fake.on_list[int(m.group(1))] = body["description"]
+                    return self.reply(200, fake.item(int(m.group(1)), body["description"]))
+                self.reply(404, {"msg": "not found"})
+
+            def do_GET(self):
+                self.handle_any("GET")
+
+            def do_POST(self):
+                self.handle_any("POST")
+
+            def do_DELETE(self):
+                self.handle_any("DELETE")
+
+        return H
+
+
 def serve(server):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
@@ -141,24 +220,33 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class ServerTest(unittest.TestCase):
     access_key = ""
-
     extra_env = {}
+    vikunja = True
+    kitchenowl = False
 
     def setUp(self):
+        env = {"LISTEN_HOST": "127.0.0.1", "LISTEN_PORT": "0", "ACCESS_KEY": self.access_key}
+        self.servers = []
         self.fake = FakeVikunja()
-        self.vik = serve(ThreadingHTTPServer(("127.0.0.1", 0), self.fake.handler()))
-        cfg = kv.Config({
-            "VIKUNJA_URL": f"http://127.0.0.1:{self.vik.server_port}",
-            "VIKUNJA_TOKEN": "secret", "VIKUNJA_PROJECT_ID": "1",
-            "LISTEN_HOST": "127.0.0.1", "LISTEN_PORT": "0", "ACCESS_KEY": self.access_key,
-            **self.extra_env,
-        })
-        self.app = serve(kv.make_server(cfg))
+        if self.vikunja:
+            self.vik = serve(ThreadingHTTPServer(("127.0.0.1", 0), self.fake.handler()))
+            self.servers.append(self.vik)
+            env.update({"VIKUNJA_URL": f"http://127.0.0.1:{self.vik.server_port}",
+                        "VIKUNJA_TOKEN": "secret", "VIKUNJA_PROJECT_ID": "1"})
+        self.ko = FakeKitchenOwl()
+        if self.kitchenowl:
+            ko = serve(ThreadingHTTPServer(("127.0.0.1", 0), self.ko.handler()))
+            self.servers.append(ko)
+            env.update({"KITCHENOWL_URL": f"http://127.0.0.1:{ko.server_port}", "KITCHENOWL_TOKEN": "ko-secret",
+                        "KITCHENOWL_LIST_ID": "7"})
+        env.update(self.extra_env)
+        self.app = serve(kv.make_server(kv.Config(env)))
+        self.servers.append(self.app)
         self.base = f"http://127.0.0.1:{self.app.server_port}"
         self.opener = urllib.request.build_opener(NoRedirect)
 
     def tearDown(self):
-        for s in (self.app, self.vik):
+        for s in reversed(self.servers):
             s.shutdown()
             s.server_close()
 
@@ -359,6 +447,100 @@ class ChecklistTests(ServerTest):
         status, body, _ = self.req("/check", {"id": "2", "i": "5", "done": "1"}, self.ajax)
         self.assertEqual(status, 502)
         self.assertIn("reload", body)
+
+
+class OrderTests(ServerTest):
+    def test_drag_and_drop_order_by_default(self):
+        self.fake.tasks[1]["position"] = 300.0
+        self.fake.tasks[2]["position"] = 100.5
+        _, body, _ = self.req("/p/1/list")
+        self.assertLess(body.index('data-id="2"'), body.index('data-id="1"'))
+        self.assertEqual(self.fake.last_query["sort_by"], ["position", "id"])
+
+
+class DashboardTests(ServerTest):
+    kitchenowl = True
+    ajax = {"X-Requested-With": "XMLHttpRequest"}
+
+    def test_dashboard_tiles(self):
+        status, body, _ = self.req("/")
+        self.assertEqual(status, 200)
+        self.assertIn('<a class="tile" href="/p/1"><div class="th"><span class="tt">Home</span>'
+                      '<span class="tc">2 open</span>', body)
+        self.assertIn('<a class="tile" href="/s/7"><div class="th"><span class="tt">Groceries</span>'
+                      '<span class="tc">3 items</span>', body)
+        self.assertIn('Milk <span class="due">2 l</span>', body)
+        self.assertIn('"list": "/dash/list"', body)
+        status, frag, headers = self.req("/dash/list")
+        self.assertTrue(frag.startswith('<a class="tile"'))
+        self.assertTrue(headers["X-Today"])
+
+    def test_pages_link_home(self):
+        self.assertIn('<a href="/">Home</a>', self.req("/p/1")[1])
+        self.assertIn('<a href="/">Home</a>', self.req("/s/7")[1])
+
+    def test_one_service_down_keeps_the_other(self):
+        self.ko.down = True
+        status, body, _ = self.req("/")
+        self.assertEqual(status, 200)
+        self.assertIn('href="/p/1"', body)
+        self.assertIn('<a class="tile" href="/shop"><div class="th"><span class="tt">KitchenOwl</span>', body)
+        self.assertRegex(body, r'<div class="terr">KitchenOwl GET /household[^<]*: 500 boom</div>')
+
+    def test_shopping_list_page(self):
+        status, body, _ = self.req("/s/7")
+        self.assertEqual(status, 200)
+        self.assertIn("<h1>Groceries</h1>", body)
+        # grouped by category order, uncategorized last
+        fruit, dairy, other = (body.index(f'<h2 class="sec">{n}</h2>') for n in ("Fruit", "Dairy", "Other"))
+        self.assertLess(fruit, dairy)
+        self.assertLess(dairy, other)
+        self.assertIn('<span class="note edit" data-empty="+" data-url="/s/7/item/1/desc">2 l</span>', body)
+        self.assertIn('data-url="/s/7/item/2/desc">+</span>', body)
+        # recently bought: only items not on the list, ticked, can be put back
+        recent = body.index("Recently bought")
+        self.assertIn('Bread &lt;fresh&gt;', body[recent:])
+        self.assertNotIn('data-id="1"', body[recent:])
+        self.assertIn('action="/s/7/toggle"', body)
+
+    def test_shop_default_list_and_tick_off(self):
+        self.assertEqual(self.req("/shop")[2]["Location"], "/s/7")
+        self.assertEqual(self.req("/s/7/toggle", {"id": "2", "done": "1"}, self.ajax)[0], 204)
+        self.assertNotIn(2, self.ko.on_list)
+        method, path, body = self.ko.requests[-1]
+        self.assertEqual((method, path, body["item_id"]), ("DELETE", "/api/shoppinglist/7/item", 2))
+        self.assertIn("removed_at", body)
+
+    def test_put_back_keeps_description(self):
+        status, _, headers = self.req("/s/7/toggle", {"id": "4", "done": "0", "desc": "1 loaf", "back": "/s/7"})
+        self.assertEqual((status, headers["Location"]), (303, "/s/7"))
+        self.assertEqual(self.ko.on_list[4], "1 loaf")
+
+    def test_add_and_describe(self):
+        self.assertEqual(self.req("/s/7/add", {"title": " oat  milk "}, self.ajax)[0], 204)
+        self.assertIn("oat milk", [it["name"] for it in self.ko.catalog.values()])
+        self.req("/s/7/item/1/desc", {"title": "3 l"}, self.ajax)
+        self.assertEqual(self.ko.on_list[1], "3 l")
+        self.req("/s/7/item/1/desc", {"title": ""}, self.ajax)       # clearing is allowed
+        self.assertEqual(self.ko.on_list[1], "")
+        self.assertEqual(self.req("/s/7/add", {"title": " "}, self.ajax)[0], 400)
+
+    def test_unknown_list(self):
+        status, body, _ = self.req("/s/99")
+        self.assertEqual(status, 502)
+        self.assertIn("not found", body)
+
+
+class KitchenOwlOnlyTests(ServerTest):
+    vikunja = False
+    kitchenowl = True
+
+    def test_dashboard_without_vikunja(self):
+        status, body, _ = self.req("/")
+        self.assertEqual(status, 200)
+        self.assertIn('href="/s/7"', body)
+        self.assertNotIn('href="/p/', body)
+        self.assertEqual(self.req("/p/1")[0], 404)
 
 
 class AccessKeyTests(ServerTest):

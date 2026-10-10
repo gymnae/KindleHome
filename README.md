@@ -1,10 +1,16 @@
 # kindle-vikunja
 
 Turn a jailbroken Kindle (built for the Paperwhite 1) into a wall-mounted,
-touch-enabled todo list for one project of a self-hosted
-[Vikunja](https://vikunja.io).
+touch-enabled household display:
 
-- Quick overview of the open tasks in a project, sorted by due date (or priority, position…)
+- the todo list of one or more [Vikunja](https://vikunja.io) projects
+- the shopping list of a [KitchenOwl](https://kitchenowl.org) household
+- a dashboard that shows both, with a tile per list, and opens them on a tap
+
+Todo lists:
+
+- Quick overview of the open tasks in a project, in the same order as in
+  Vikunja's list view (drag and drop there to reorder)
 - Tap the box to tick a task off (or tap again to undo)
 - Subtasks are listed on the task's detail page, so the main list stays uncluttered.
   Both kinds work: real subtasks, and checklist items typed in the description
@@ -18,11 +24,18 @@ touch-enabled todo list for one project of a self-hosted
   labels, subtask progress
 - Re-syncs automatically, but only redraws when something changed (saves e-ink flashes)
 
+Shopping list:
+
+- Items are grouped by KitchenOwl category. Tap the box to tick an item off
+- Tap the note next to an item (`+` when empty) to edit it, e.g. "2 l"
+- "Recently bought" items: tick one to put it back on the list
+- Add items with the field at the top. Known items are reused, new ones created
+
 ```
-┌──────────┐  plain HTTP (LAN)  ┌────────────────┐  HTTPS + API token  ┌─────────┐
-│  Kindle  │ ─────────────────▶ │ kindle-vikunja │ ──────────────────▶ │ Vikunja │
-│ browser  │  simple HTML/ES5   │  (this server) │     /api/v1         │         │
-└──────────┘                    └────────────────┘                     └─────────┘
+┌──────────┐  plain HTTP (LAN)  ┌────────────────┐  HTTPS + API tokens  ┌────────────┐
+│  Kindle  │ ─────────────────▶ │ kindle-vikunja │ ───────────────────▶ │ Vikunja    │
+│ browser  │  simple HTML/ES5   │  (this server) │ ───────────────────▶ │ KitchenOwl │
+└──────────┘                    └────────────────┘                      └────────────┘
 ```
 
 **Why a server in between?** The Kindle's experimental browser is a 2012 WebKit.
@@ -50,6 +63,16 @@ expiry date, because the display stops working when the token expires.
 The project ID is the number in the URL of the project in Vikunja
 (`…/projects/12/…` → `12`).
 
+## 1b. KitchenOwl token (optional)
+
+In KitchenOwl, open *Settings → Profile → Sessions* and create a
+**long-lived token**. The menu names can vary a little between versions. Put
+it in `KITCHENOWL_TOKEN`, together with `KITCHENOWL_URL`. The household and
+list are optional: by default the user's first household and its default
+shopping list are used. Otherwise take the household number from the
+KitchenOwl web URL and set `KITCHENOWL_HOUSEHOLD_ID`, and `KITCHENOWL_LIST_ID`
+for a specific list.
+
 ## 2. Run the server
 
 ```sh
@@ -64,7 +87,9 @@ Open `http://<server>:8080/` in a desktop browser to check that it works.
 
 | URL          | What                                          |
 |--------------|-----------------------------------------------|
-| `/`          | redirects to the default project (or picker)  |
+| `/`          | dashboard (or the default project / picker)   |
+| `/s/<id>`    | KitchenOwl shopping list `<id>`               |
+| `/shop`      | the configured/default shopping list          |
 | `/p/<id>`    | the todo page for project `<id>`              |
 | `/t/<id>`    | detail page of task `<id>`                    |
 | `/projects`  | project picker                                |

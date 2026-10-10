@@ -18,6 +18,7 @@ import os
 import re
 import ssl
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -40,6 +41,9 @@ STRINGS = {
         "pick": "Choose a project",
         "back": "Back", "subtasks": "Subtasks", "parent": "Part of",
         "new_subtask": "New subtask…",
+        "home": "Home", "recent": "Recently bought", "new_item": "Add item…", "other": "Other",
+        "open_count": "{n} open", "item_count": "{n} items", "more": "+{n} more",
+        "list_empty": "The shopping list is empty.", "not_configured": "{name} is not configured.",
     },
     "de": {
         "today": "heute", "tomorrow": "morgen", "yesterday": "gestern",
@@ -51,6 +55,9 @@ STRINGS = {
         "pick": "Projekt wählen",
         "back": "Zurück", "subtasks": "Unteraufgaben", "parent": "Teil von",
         "new_subtask": "Neue Unteraufgabe…",
+        "home": "Start", "recent": "Zuletzt gekauft", "new_item": "Artikel hinzufügen…", "other": "Sonstiges",
+        "open_count": "{n} offen", "item_count": "{n} Artikel", "more": "+{n} weitere",
+        "list_empty": "Die Einkaufsliste ist leer.", "not_configured": "{name} ist nicht eingerichtet.",
     },
 }
 
@@ -67,58 +74,103 @@ class Config:
             url += "/api/v1"
         self.api_url = url
         self.token = env.get("VIKUNJA_TOKEN", "").strip()
-        self.default_project = env.get("VIKUNJA_PROJECT_ID", "").strip()
+        # one or more project ids ("3" or "3,5"); the first one is the default
+        self.projects = [p.strip() for p in env.get("VIKUNJA_PROJECT_ID", "").split(",") if p.strip()]
+        self.default_project = self.projects[0] if self.projects else ""
+        self.vikunja = bool(self.api_url and self.token)
+
+        ko_url = env.get("KITCHENOWL_URL", "").strip().rstrip("/")
+        if ko_url and not ko_url.endswith("/api"):
+            ko_url += "/api"
+        self.ko_url = ko_url
+        self.ko_token = env.get("KITCHENOWL_TOKEN", "").strip()
+        self.ko_household = env.get("KITCHENOWL_HOUSEHOLD_ID", "").strip()
+        self.ko_list = env.get("KITCHENOWL_LIST_ID", "").strip()
+        self.ko_recent = max(0, min(120, int(env.get("KITCHENOWL_RECENT", "12"))))
+        self.kitchenowl = bool(self.ko_url and self.ko_token)
+
+        self.dashboard = (env.get("DASHBOARD", "auto").strip().lower() in ("1", "yes", "true")
+                          or (env.get("DASHBOARD", "auto").strip().lower() == "auto"
+                              and (self.kitchenowl or len(self.projects) > 1)))
+        self.dashboard_after = int(env.get("DASHBOARD_RETURN_SECONDS", "0"))
         self.host = env.get("LISTEN_HOST", "0.0.0.0")
         self.port = int(env.get("LISTEN_PORT", "8080"))
         self.access_key = env.get("ACCESS_KEY", "").strip()
         self.refresh = max(10, int(env.get("REFRESH_SECONDS", "60")))
-        self.sort = env.get("SORT", "due").strip().lower()
+        # "position" = the manual (drag and drop) order of Vikunja's list view
+        self.sort = env.get("SORT", "position").strip().lower()
         self.font_size = int(env.get("FONT_SIZE", "24"))
         self.lang = env.get("UI_LANG", "en").strip().lower()
         self.list_subtasks = env.get("LIST_SUBTASKS", "0").lower() not in ("0", "false", "no")
         self.home_after = int(env.get("DETAIL_RETURN_SECONDS", "300"))
         self.timeout = float(env.get("VIKUNJA_TIMEOUT", "15"))
         self.verify_tls = env.get("VIKUNJA_VERIFY_TLS", "1").lower() not in ("0", "false", "no")
+        self.ko_verify_tls = env.get("KITCHENOWL_VERIFY_TLS", "1").lower() not in ("0", "false", "no")
 
 
 # --------------------------------------------------------------------------
-# Vikunja API client
+# API clients
 # --------------------------------------------------------------------------
 
-class VikunjaError(Exception):
+class ApiError(Exception):
     def __init__(self, message, status=None):
         super().__init__(message)
         self.status = status
 
 
-class Vikunja:
-    def __init__(self, cfg):
-        self.cfg = cfg
-        self._ctx = None if cfg.verify_tls else ssl._create_unverified_context()
+VikunjaError = ApiError
+
+
+class JsonApi:
+    """Minimal JSON-over-HTTP client with bearer token auth."""
+
+    name = "API"
+
+    def __init__(self, base_url, token, timeout, verify_tls):
+        self.base_url, self.token, self.timeout = base_url, token, timeout
+        self._ctx = None if verify_tls else ssl._create_unverified_context()
 
     def request(self, method, path, params=None, body=None):
-        url = self.cfg.api_url + path
+        url = self.base_url + path
         if params:
             url += "?" + urllib.parse.urlencode(params, doseq=True)
-        headers = {"Authorization": "Bearer " + self.cfg.token, "Accept": "application/json"}
+        headers = {"Authorization": "Bearer " + self.token, "Accept": "application/json"}
         data = None
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=self.cfg.timeout, context=self._ctx) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout, context=self._ctx) as resp:
                 raw = resp.read()
                 return (json.loads(raw) if raw else None), resp.headers
         except urllib.error.HTTPError as e:
             msg = e.reason
             try:
-                msg = json.loads(e.read()).get("message", msg)
+                err = json.loads(e.read())
+                msg = err.get("message") or err.get("msg") or msg
             except Exception:
                 pass
-            raise VikunjaError(f"Vikunja {method} {path}: {e.code} {msg}", e.code) from None
+            raise ApiError(f"{self.name} {method} {path}: {e.code} {msg}", e.code) from None
         except (urllib.error.URLError, OSError, ValueError) as e:
-            raise VikunjaError(f"Cannot reach Vikunja: {e}") from None
+            raise ApiError(f"Cannot reach {self.name}: {e}") from None
+
+
+class Vikunja(JsonApi):
+    name = "Vikunja"
+
+    def __init__(self, cfg):
+        super().__init__(cfg.api_url, cfg.token, cfg.timeout, cfg.verify_tls)
+        self._titles = {}  # project id -> (title, fetched at)
+
+    def project_title(self, project_id):
+        """Project title, cached for 10 minutes (used by the dashboard on every refresh)."""
+        cached = self._titles.get(str(project_id))
+        if cached and time.time() - cached[1] < 600:
+            return cached[0]
+        title = self.project(project_id).get("title") or ""
+        self._titles[str(project_id)] = (title, time.time())
+        return title
 
     def get_all(self, path, params=None):
         """GET a paginated collection and return all items."""
@@ -155,8 +207,10 @@ class Vikunja:
             for kind in ("list", "table"):
                 view = next((v for v in views if v.get("view_kind") == kind), None)
                 if view:
+                    # sorting by position makes Vikunja return each task's position in this view
                     items = self.get_all(f"/projects/{project_id}/views/{view['id']}/tasks",
-                                         {"filter": "done = false"})
+                                         {"filter": "done = false", "sort_by": ["position", "id"],
+                                          "order_by": ["asc", "asc"]})
                     return _flatten_buckets(items)
             return self.get_all("/tasks/all", {"filter": f"done = false && project = {int(project_id)}"})
 
@@ -207,6 +261,65 @@ class Vikunja:
             self.request("PUT", f"/tasks/{parent_id}/relations", body={
                 "task_id": int(parent_id), "other_task_id": task["id"], "relation_kind": "subtask"})
         return task
+
+
+class KitchenOwl(JsonApi):
+    """KitchenOwl shopping lists (https://kitchenowl.org), via its REST API."""
+
+    name = "KitchenOwl"
+
+    def __init__(self, cfg):
+        super().__init__(cfg.ko_url, cfg.ko_token, cfg.timeout, cfg.ko_verify_tls)
+        self.cfg = cfg
+        self._household = cfg.ko_household or None
+
+    def household_id(self):
+        if not self._household:
+            households = self.request("GET", "/household")[0] or []
+            if not households:
+                raise ApiError("KitchenOwl: this user is not in any household")
+            self._household = str(households[0]["id"])
+        return self._household
+
+    def shopping_list(self, list_id=None):
+        """One list with its "items" and "recentItems" (default: configured or household default list)."""
+        lists = self.request("GET", f"/household/{self.household_id()}/shoppinglist",
+                             {"recent_limit": max(1, self.cfg.ko_recent)})[0] or []
+        if not lists:
+            raise ApiError("KitchenOwl: the household has no shopping list")
+        wanted = str(list_id or self.cfg.ko_list or "")
+        if wanted:
+            found = [lst for lst in lists if str(lst.get("id")) == wanted]
+            if not found:
+                raise ApiError(f"KitchenOwl: shopping list {wanted} not found", 404)
+            lst = found[0]
+        else:
+            lst = min(lists, key=lambda lst: lst.get("id", 0))  # KitchenOwl's default list
+        # older KitchenOwl versions don't embed the items
+        if "items" not in lst:
+            lst["items"] = self.request("GET", f"/shoppinglist/{lst['id']}/items")[0] or []
+        if "recentItems" not in lst:
+            lst["recentItems"] = self.request("GET", f"/shoppinglist/{lst['id']}/recent-items",
+                                              {"limit": max(1, self.cfg.ko_recent)})[0] or []
+        if not self.cfg.ko_recent:
+            lst["recentItems"] = []
+        return lst
+
+    def add(self, list_id, name):
+        return self.request("POST", f"/shoppinglist/{list_id}/add-item-by-name", body={"name": name})[0]
+
+    def remove(self, list_id, item_id):
+        """Tick an item off (KitchenOwl moves it to the recent items)."""
+        self.request("DELETE", f"/shoppinglist/{list_id}/item",
+                     body={"item_id": int(item_id), "removed_at": int(time.time() * 1000)})
+
+    def set_description(self, list_id, item_id, description):
+        """Set an item's description; also (re-)adds the item to the list if it isn't on it."""
+        self.request("POST", f"/shoppinglist/{list_id}/item/{item_id}", body={"description": description})
+
+
+def _shop_item_key(item):
+    return (item.get("ordering") or 0, (item.get("name") or "").lower())
 
 
 def _flatten_buckets(items):
@@ -582,6 +695,16 @@ ul{list-style:none;margin:0;padding:0}
 .lbl{border:1px solid #000;padding:0 4px}
 .who{font-weight:bold;font-style:italic}
 .empty{padding:40px 0;text-align:center;font-size:1.1em}
+.tile{display:block;margin:0 0 14px;padding:10px 14px 12px;border:3px solid #000;color:#000;text-decoration:none}
+.tile .th{display:table;width:100%}
+.tile .tt{display:table-cell;font-size:1.25em;font-weight:bold}
+.tile .tc{display:table-cell;text-align:right;font-size:1.1em;font-weight:bold;white-space:nowrap}
+.tile ul{margin:6px 0 0;font-size:.85em}
+.tile li{padding:4px 0;border-top:1px dotted #000;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.tile li .due{font-size:.8em;margin-left:6px}
+.tile .tmore{font-size:.7em;margin-top:4px}
+.tile .terr{font-weight:bold;font-size:.8em;margin-top:6px}
+.note{display:inline-block;min-width:1.6em;padding:2px 4px;text-align:center}
 .plist a{display:block;padding:14px 0;border-bottom:1px solid #000;text-decoration:none}
 .open{display:block;color:#000;text-decoration:none}
 .row .body.link{padding:0}
@@ -677,6 +800,7 @@ JS = r"""
         updatePager();
       }
       $("upd").textContent = r.getResponseHeader("X-Updated") || "";
+      if ($("today") && r.getResponseHeader("X-Today")) $("today").textContent = r.getResponseHeader("X-Today");
       status("");
     });
   }
@@ -702,11 +826,13 @@ JS = r"""
     var save = document.createElement("button"), cancel = document.createElement("button");
     f.className = "ren";
     inp.type = "text"; inp.name = "title"; inp.setAttribute("autocomplete", "off");
-    inp.value = el.textContent.replace(/^\s+|\s+$/g, "");
+    // data-empty: placeholder shown for empty text (which may then be saved empty)
+    var ph = el.getAttribute("data-empty"), cur = el.textContent.replace(/^\s+|\s+$/g, "");
+    inp.value = cur === ph ? "" : cur;
     save.type = "submit"; save.textContent = CFG.save;
     cancel.type = "button"; cancel.className = "cancel"; cancel.textContent = CFG.cancel;
     f.appendChild(inp); f.appendChild(save); f.appendChild(cancel);
-    editing = { el: el, html: el.innerHTML, text: inp.value };
+    editing = { el: el, html: el.innerHTML, text: inp.value, ph: ph };
     el.innerHTML = "";
     el.appendChild(f);
     inp.focus();
@@ -719,14 +845,14 @@ JS = r"""
   }
   function saveEdit(f) {
     var value = f.elements["title"].value.replace(/\s+/g, " ").replace(/^ | $/g, "");
-    if (!value || value === editing.text) { stopEdit(null); return; }
-    var el = editing.el, i = el.getAttribute("data-i");
+    if ((!value && editing.ph === null) || value === editing.text) { stopEdit(null); return; }
+    var el = editing.el, i = el.getAttribute("data-i"), ph = editing.ph;
     var body = "title=" + encodeURIComponent(value) + (i !== null ? "&i=" + encodeURIComponent(i) : "");
     status("\u2026");
     xhr("POST", el.getAttribute("data-url"), body, function (ok, r) {
       if (!ok) { status(errText(r), true); return; }
       status("");
-      stopEdit(value);
+      stopEdit(value || ph);
       if (hasCls(el, "title") && closest(el, "head")) document.title = value;
     });
   }
@@ -878,13 +1004,31 @@ class Renderer:
             parts.append('<span class="more">\u00b6</span>')
         return f' <span class="meta">{"".join(parts)}</span>' if parts else ""
 
-    def _toggle_form(self, t, back):
+    def _toggle_form(self, t, back, action="/toggle", extra=None):
+        hidden = "".join(f'<input type="hidden" name="{k}" value="{esc(v)}">' for k, v in (extra or {}).items())
         return (
-            '<form class="t" method="post" action="/toggle">'
+            f'<form class="t" method="post" action="{action}">'
             f'<input type="hidden" name="id" value="{t["id"]}">'
             f'<input type="hidden" name="done" value="{"0" if t.get("done") else "1"}">'
-            f'<input type="hidden" name="back" value="{esc(back)}">'
+            f'<input type="hidden" name="back" value="{esc(back)}">{hidden}'
             '<button type="submit" class="cb"><span class="mark"></span></button></form>'
+        )
+
+    def _home_link(self):
+        return f'<a href="/">{esc(self.t["home"])}</a>' if self.cfg.dashboard else ""
+
+    def _home_return(self):
+        """Script options: go back to the dashboard after DASHBOARD_RETURN_SECONDS idle."""
+        if self.cfg.dashboard and self.cfg.dashboard_after > 0:
+            return {"home": "/", "homeAfter": self.cfg.dashboard_after}
+        return {"home": None}
+
+    def _add_form(self, action, placeholder, hidden=""):
+        return (
+            f'<form id="add" method="post" action="{action}">{hidden}'
+            '<div class="line"><div class="in">'
+            f'<input type="text" id="title" name="title" autocomplete="off" placeholder="{esc(placeholder)}">'
+            f'</div><div class="go"><button type="submit">{esc(self.t["add"])}</button></div></div></form>'
         )
 
     def _node(self, t, kids, ctx, depth=0):
@@ -950,7 +1094,7 @@ class Renderer:
         banner = f'<div class="banner">{esc(error)}</div>' if error else ""
         body = (
             f'<div id="hd"><h1>{esc(title)}</h1><div class="nav">'
-            f'<span id="upd">{dt.datetime.now().strftime("%H:%M")}</span>'
+            f'<span id="upd">{dt.datetime.now().strftime("%H:%M")}</span>{self._home_link()}'
             f'<a href="/p/{project_id}">{esc(t["refresh"])}</a>'
             f'<a href="/projects">{esc(t["projects"])}</a>{self._exit_link()}</div></div>'
             f'{banner}<form id="add" method="post" action="/p/{project_id}/add">'
@@ -959,7 +1103,7 @@ class Renderer:
             f'</div><div class="go"><button type="submit">{esc(t["add"])}</button></div></div></form>'
             f'<div id="status"></div><div id="list">{list_html}</div>'
         )
-        return self.layout(title, body, self._script(list=f"/p/{project_id}/list", home=None))
+        return self.layout(title, body, self._script(list=f"/p/{project_id}/list", **self._home_return()))
 
     def detail_page(self, task, project_id, project_title, now=None):
         """One task: its description, parent and (tickable) subtasks."""
@@ -995,6 +1139,105 @@ class Renderer:
         home_after = self.cfg.home_after
         return self.layout(task.get("title") or "", body,
                            self._script(list=None, home=home if home_after > 0 else None, homeAfter=home_after))
+
+    # -- dashboard -----------------------------------------------------------
+
+    def today(self, now=None):
+        now = now or dt.datetime.now()
+        return f'{self.t["weekdays"][now.weekday()]} {now.strftime("%d.%m.")}'
+
+    def _tile(self, href, title, count="", lines=(), more=0, error=None):
+        items = "".join(f"<li>{line}</li>" for line in lines)
+        return (
+            f'<a class="tile" href="{esc(href)}"><div class="th"><span class="tt">{esc(title)}</span>'
+            f'<span class="tc">{esc(count)}</span></div>'
+            + (f"<ul>{items}</ul>" if items else "")
+            + (f'<div class="tmore">{esc(self.t["more"].format(n=more))}</div>' if more > 0 else "")
+            + (f'<div class="terr">{esc(error)}</div>' if error else "")
+            + "</a>"
+        )
+
+    def vikunja_tile(self, project_id, title, tasks, now=None, max_lines=6):
+        now = now or dt.datetime.now().astimezone()
+        roots, _ = build_tree(tasks, self.cfg.sort)
+        lines = []
+        for t in roots[:max_lines]:
+            d = parse_date(t.get("due_date"))
+            due = (f'<span class="due{" over" if d < now else ""}">{esc(self.fmt_date(d, now))}</span>'
+                   if d else "")
+            lines.append(esc(t.get("title")) + due)
+        return self._tile(f"/p/{project_id}", title, self.t["open_count"].format(n=len(roots)),
+                          lines, len(roots) - len(lines))
+
+    def shop_tile(self, lst, max_lines=6):
+        items = sorted(lst.get("items") or [], key=_shop_item_key)
+        lines = [esc(i.get("name")) + (f' <span class="due">{esc(i["description"])}</span>'
+                                       if i.get("description") else "") for i in items[:max_lines]]
+        return self._tile(f"/s/{lst['id']}", lst.get("name") or "KitchenOwl",
+                          self.t["item_count"].format(n=len(items)), lines, len(items) - len(lines))
+
+    def error_tile(self, href, title, error):
+        return self._tile(href, title, error=str(error))
+
+    def dashboard_page(self, tiles_html):
+        body = (
+            f'<div id="hd"><h1 id="today">{esc(self.today())}</h1><div class="nav">'
+            f'<span id="upd">{dt.datetime.now().strftime("%H:%M")}</span>'
+            f'<a href="/">{esc(self.t["refresh"])}</a>{self._exit_link()}</div></div>'
+            f'<div id="status"></div><div id="list">{tiles_html}</div>'
+        )
+        return self.layout(self.t["home"], body, self._script(list="/dash/list", home=None))
+
+    # -- KitchenOwl shopping list --------------------------------------------
+
+    def _shop_row(self, lid, item, done):
+        iid, desc = item["id"], item.get("description") or ""
+        form = self._toggle_form({"id": iid, "done": done}, f"/s/{lid}", f"/s/{lid}/toggle",
+                                 {"desc": desc} if done else None)
+        if done:
+            note = f' <span class="meta">{esc(desc)}</span>' if desc else ""
+        else:  # tap the note to edit it ("+" when empty)
+            note = (f' <span class="meta"><span class="note edit" data-empty="+"'
+                    f'{_edit_attrs(f"/s/{lid}/item/{iid}/desc")}>{esc(desc) or "+"}</span></span>')
+        return (f'<li class="task{" done" if done else ""}" data-id="{iid}"><div class="row">{form}'
+                f'<div class="body"><span class="title">{esc(item.get("name"))}</span>{note}</div></div></li>')
+
+    def shop_list(self, lst):
+        lid, t = lst["id"], self.t
+        items = lst.get("items") or []
+        groups = {}
+        for item in items:
+            cat = item.get("category") or {}
+            key = (cat.get("id") is None, cat.get("ordering") or 0, (cat.get("name") or "").lower(), cat.get("id"))
+            groups.setdefault(key, (cat.get("name") or t["other"], []))[1].append(item)
+        with_headers = any(item.get("category") for item in items)
+        out = []
+        for key in sorted(groups, key=lambda k: k[:3]):
+            name, group = groups[key]
+            if with_headers:
+                out.append(f'<h2 class="sec">{esc(name)}</h2>')
+            out.append("<ul>" + "".join(self._shop_row(lid, i, False)
+                                        for i in sorted(group, key=_shop_item_key)) + "</ul>")
+        if not items:
+            out.append(f'<p class="empty">{esc(t["list_empty"])}</p>')
+        on_list = {i.get("id") for i in items}
+        recent = [i for i in lst.get("recentItems") or [] if i.get("id") not in on_list]
+        if recent:
+            out.append(f'<h2 class="sec">{esc(t["recent"])}</h2><ul>'
+                       + "".join(self._shop_row(lid, i, True) for i in recent) + "</ul>")
+        return "".join(out)
+
+    def shop_page(self, lst, list_html):
+        lid, t = lst["id"], self.t
+        title = lst.get("name") or "KitchenOwl"
+        body = (
+            f'<div id="hd"><h1>{esc(title)}</h1><div class="nav">'
+            f'<span id="upd">{dt.datetime.now().strftime("%H:%M")}</span>{self._home_link()}'
+            f'<a href="/s/{lid}">{esc(t["refresh"])}</a>{self._exit_link()}</div></div>'
+            + self._add_form(f"/s/{lid}/add", t["new_item"])
+            + f'<div id="status"></div><div id="list">{list_html}</div>'
+        )
+        return self.layout(title, body, self._script(list=f"/s/{lid}/list", **self._home_return()))
 
     def projects_page(self, projects):
         ids = {p["id"] for p in projects}
@@ -1032,7 +1275,8 @@ class Renderer:
 class Handler(BaseHTTPRequestHandler):
     server_version = "kindle-vikunja"
     cfg = None
-    api = None
+    api = None  # Vikunja (None if not configured)
+    ko = None   # KitchenOwl (None if not configured)
     render = None
 
     def log_message(self, fmt, *args):
@@ -1098,7 +1342,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, self.render.message_page("403", self.render.t["forbidden"]))
         try:
             self._route(method, path)
-        except VikunjaError as e:
+        except ApiError as e:
             self.log_message("%s", e)
             if self._ajax() or path.endswith("/list"):
                 self._send(502, str(e), "text/plain; charset=utf-8")
@@ -1106,10 +1350,25 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(502, self.render.message_page(self.render.t["error"], str(e)))
 
     def _route(self, method, path):
-        m = re.fullmatch(r"/p/(-?\d+)(/list|/add)?", path)
         if method == "GET" and path == "/":
+            if self.cfg.dashboard:
+                return self._send(200, self.render.dashboard_page(self._tiles()))
+            if not self.api:
+                return self._redirect("/shop")
             dp = self.cfg.default_project
             return self._redirect(f"/p/{dp}" if dp else "/projects")
+        if method == "GET" and path == "/dash/list":
+            return self._send(200, self._tiles(), headers={
+                "X-Updated": dt.datetime.now().strftime("%H:%M"), "X-Today": self.render.today()})
+        if path == "/shop" or path.startswith("/s/"):
+            if not self.ko:
+                return self._send(404, self.render.message_page(
+                    "404", self.render.t["not_configured"].format(name="KitchenOwl")))
+            return self._shop_route(method, path)
+        if not self.api and path != "/healthz":
+            return self._send(404, self.render.message_page(
+                "404", self.render.t["not_configured"].format(name="Vikunja")))
+        m = re.fullmatch(r"/p/(-?\d+)(/list|/add)?", path)
         if method == "GET" and path == "/projects":
             return self._send(200, self.render.projects_page(self.api.projects()))
         if method == "GET" and m and m.group(2) is None:
@@ -1130,6 +1389,61 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/toggle":
             return self._toggle()
         self._send(404, self.render.message_page("404", path))
+
+    # -- dashboard / KitchenOwl ---------------------------------------------
+
+    def _tiles(self):
+        """Dashboard tiles; a failing service only breaks its own tile."""
+        render, tiles = self.render, []
+        if self.api:
+            if not self.cfg.projects:
+                tiles.append(render._tile("/projects", "Vikunja"))
+            for pid in self.cfg.projects:
+                try:
+                    tiles.append(render.vikunja_tile(pid, self.api.project_title(pid), self.api.open_tasks(pid)))
+                except ApiError as e:
+                    self.log_message("%s", e)
+                    tiles.append(render.error_tile(f"/p/{pid}", "Vikunja", e))
+        if self.ko:
+            try:
+                tiles.append(render.shop_tile(self.ko.shopping_list()))
+            except ApiError as e:
+                self.log_message("%s", e)
+                tiles.append(render.error_tile("/shop", "KitchenOwl", e))
+        return "".join(tiles)
+
+    def _shop_route(self, method, path):
+        if method == "GET" and path == "/shop":
+            return self._redirect(f"/s/{self.ko.shopping_list()['id']}")
+        m = re.fullmatch(r"/s/(\d+)(/list|/add|/toggle|/item/(\d+)/desc)?", path)
+        if not m:
+            return self._send(404, self.render.message_page("404", path))
+        lid, action = m.group(1), m.group(2)
+        if method == "GET" and action is None:
+            lst = self.ko.shopping_list(lid)
+            return self._send(200, self.render.shop_page(lst, self.render.shop_list(lst)))
+        if method == "GET" and action == "/list":
+            return self._send(200, self.render.shop_list(self.ko.shopping_list(lid)),
+                              headers={"X-Updated": dt.datetime.now().strftime("%H:%M")})
+        if method != "POST" or action is None:
+            return self._send(404, self.render.message_page("404", path))
+        form = self._form()
+        form.setdefault("back", f"/s/{lid}")
+        if action == "/add":
+            name = " ".join(form.get("title", "").split())[:128]
+            if not name:
+                return self._send(400, "empty name", "text/plain") if self._ajax() else self._redirect(f"/s/{lid}")
+            self.ko.add(lid, name)
+        elif action == "/toggle":
+            if not form.get("id", "").isdigit():
+                return self._send(400, "bad item id", "text/plain")
+            if form.get("done") == "1":
+                self.ko.remove(lid, form["id"])
+            else:  # back onto the list (from the recent items), keeping its description
+                self.ko.set_description(lid, form["id"], form.get("desc", "")[:250])
+        else:
+            self.ko.set_description(lid, m.group(3), " ".join(form.get("title", "").split())[:250])
+        self._done_redirect(form)
 
     # -- actions -----------------------------------------------------------
 
@@ -1181,7 +1495,7 @@ class Handler(BaseHTTPRequestHandler):
         if self._ajax():
             return self._send(204, "")
         back = form.get("back", "/")
-        self._redirect(back if re.fullmatch(r"/p/-?\d+|/t/\d+(\?p=-?\d+)?", back) else "/")
+        self._redirect(back if re.fullmatch(r"/|/p/-?\d+|/t/\d+(\?p=-?\d+)?|/s/\d+", back) else "/")
 
     def _toggle(self):
         form = self._form()
@@ -1208,16 +1522,21 @@ class Handler(BaseHTTPRequestHandler):
 
 def make_server(cfg):
     handler = type("BoundHandler", (Handler,), {
-        "cfg": cfg, "api": Vikunja(cfg), "render": Renderer(cfg)})
+        "cfg": cfg, "render": Renderer(cfg),
+        "api": Vikunja(cfg) if cfg.vikunja else None,
+        "ko": KitchenOwl(cfg) if cfg.kitchenowl else None})
     return ThreadingHTTPServer((cfg.host, cfg.port), handler)
 
 
 def main():
     cfg = Config()
-    if not cfg.api_url or not cfg.token:
-        sys.exit("VIKUNJA_URL and VIKUNJA_TOKEN must be set (see .env.example)")
+    if not cfg.vikunja and not cfg.kitchenowl:
+        sys.exit("Configure VIKUNJA_URL + VIKUNJA_TOKEN and/or KITCHENOWL_URL + KITCHENOWL_TOKEN "
+                 "(see .env.example)")
     server = make_server(cfg)
-    print(f"kindle-vikunja listening on http://{cfg.host}:{cfg.port} -> {cfg.api_url}", flush=True)
+    services = ", ".join(f"{n} {u}" for n, u, on in (("Vikunja", cfg.api_url, cfg.vikunja),
+                                                    ("KitchenOwl", cfg.ko_url, cfg.kitchenowl)) if on)
+    print(f"kindle-vikunja listening on http://{cfg.host}:{cfg.port} -> {services}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
