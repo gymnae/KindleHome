@@ -3,6 +3,9 @@ EXT=/mnt/us/extensions/vikunja
 PIDFILE=/tmp/kindle-vikunja-watchdog.pid
 MODEFILE=/tmp/kindle-vikunja.mode   # "browser" or "fullscreen", written by start.sh
 LOG=/tmp/kindle-vikunja.log
+LIGHTPID=/tmp/kindle-vikunja-light.pid
+LIGHTSTATE=/tmp/kindle-vikunja.light
+TOUCHFILE=/tmp/kindle-vikunja.touch
 APP_ID=com.kindlevikunja.kiosk
 APPREG=/var/local/appreg.db
 . "$EXT/config.sh"
@@ -73,6 +76,32 @@ start_detached() {
         fi
     done
     /bin/sh "$@" </dev/null >/dev/null 2>&1 &
+}
+
+# The touchscreen's /dev/input/eventN, from /proc/bus/input/devices.
+find_touch_dev() {
+    awk '/^N:/ { name = tolower($0) }
+         /^H:/ && name ~ /zforce|touch|cyttsp|elan|pixcir|cypress/ && match($0, /event[0-9]+/) {
+             print "/dev/input/" substr($0, RSTART, RLENGTH); exit
+         }' /proc/bus/input/devices 2>/dev/null
+}
+
+light_running() {
+    [ -f "$LIGHTPID" ] && kill -0 "$(cat "$LIGHTPID")" 2>/dev/null
+}
+
+start_light() {
+    [ "${KV_LIGHT_AUTO:-1}" = "1" ] || return 0
+    light_running || start_detached "$EXT/bin/light.sh"
+}
+
+stop_light() {
+    if [ -f "$LIGHTPID" ]; then
+        # light.sh runs in its own process group (setsid): stop it with its timer and blocked read
+        pid=$(cat "$LIGHTPID")
+        kill -TERM -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null
+        rm -f "$LIGHTPID"
+    fi
 }
 
 stop_watchdog() {

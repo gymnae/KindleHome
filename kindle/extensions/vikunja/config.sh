@@ -19,5 +19,16 @@ KV_HIDE_BARS=0
 # "top" navigates the app itself to the page (try this if "frame" stays blank).
 KV_APP_MODE=frame
 
-# Frontlight level (0-24) while the display runs. Empty = leave unchanged.
+# Front light controlled by touch: on when the screen is touched, off after
+# KV_LIGHT_TIMEOUT seconds without a touch. 1 = on, 0 = off (then KV_FRONTLIGHT applies).
+KV_LIGHT_AUTO=1
+# Light levels, 0-24 on a Paperwhite 1 (18 = 75%)
+KV_LIGHT_ON=18
+KV_LIGHT_OFF=0
+KV_LIGHT_TIMEOUT=60
+# Touchscreen input device; empty = detect (see "Collect diagnostics")
+KV_TOUCH_DEV=""
+
+# Fixed front light level (0-24) while the display runs, if KV_LIGHT_AUTO=0.
+# Empty = leave unchanged.
 KV_FRONTLIGHT=""

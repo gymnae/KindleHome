@@ -11,6 +11,10 @@ last=$(date +%s)
 while true; do
     sleep 60
     lipc-set-prop com.lab126.powerd preventScreenSaver 1
+    if [ "${KV_LIGHT_AUTO:-1}" = "1" ] && ! light_running; then
+        log "light control not running, restarting"
+        start_light
+    fi
     if [ "$(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null)" = "0" ]; then
         log "wifi was off, enabling"
         lipc-set-prop com.lab126.cmd wirelessEnable 1

@@ -19,6 +19,12 @@ log "collecting diagnostics into $OUT"
         "SELECT handlerId, name, value FROM properties WHERE handlerId LIKE '%browser%' OR value LIKE '%mesquite%' OR value LIKE '%waf%';" 2>&1
     echo "=== tools";           ls -l /usr/bin/setsid /bin/setsid /sbin/setsid /usr/bin/nohup /bin/nohup 2>&1
     echo "=== watchdog";        cat "$PIDFILE" 2>&1 && kill -0 "$(cat "$PIDFILE")" 2>&1 && echo running
+    echo "=== input devices";   cat /proc/bus/input/devices 2>&1
+    echo "=== touch device";    find_touch_dev
+    echo "=== front light";     lipc-get-prop com.lab126.powerd flIntensity 2>&1
+    lipc-probe -v com.lab126.powerd 2>&1 | grep -i -e fl -e light
+    ls /sys/devices/system/ 2>&1 | grep -i fl
+    echo "light control: $(cat "$LIGHTSTATE" 2>/dev/null) pid $(cat "$LIGHTPID" 2>/dev/null)"
     echo "=== fullscreen app";  cat "$MODEFILE" 2>&1; cat "$EXT/app/config.js" 2>&1
     sqlite3 "$APPREG" "SELECT * FROM properties WHERE handlerId = '$APP_ID';" 2>&1
     echo "=== mesquite apps";   ls /var/local/mesquite/ 2>&1

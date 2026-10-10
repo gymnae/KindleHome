@@ -9,8 +9,13 @@ echo "$MODE" > "$MODEFILE"
 [ "$MODE" = "fullscreen" ] && install_app
 
 stop_watchdog
+stop_light
 lipc-set-prop com.lab126.powerd preventScreenSaver 1
-[ -n "$KV_FRONTLIGHT" ] && lipc-set-prop com.lab126.powerd flIntensity "$KV_FRONTLIGHT"
+if [ "${KV_LIGHT_AUTO:-1}" = "1" ]; then
+    start_light
+elif [ -n "$KV_FRONTLIGHT" ]; then
+    lipc-set-prop com.lab126.powerd flIntensity "$KV_FRONTLIGHT"
+fi
 
 start_detached "$EXT/bin/watchdog.sh"
 

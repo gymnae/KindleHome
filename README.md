@@ -181,6 +181,17 @@ After a reboot, run *Start todo display* again (it is not started automatically)
   quicker than drag scrolling on e-ink.
 - To change the font size, set `FONT_SIZE` on the server (default 24px).
 
+### Front light
+
+The front light follows touches by default. Touching the screen turns it on
+(`KV_LIGHT_ON`, 18 of 24 = 75%), and it goes off after `KV_LIGHT_TIMEOUT`
+seconds (60) without a touch. A background script on the Kindle does this. It
+reads the touchscreen's input events alongside the Kindle's own software, so
+the touch that wakes the light also counts as a normal tap on the page. Set
+`KV_LIGHT_AUTO=0` in `config.sh` to turn this off, and `KV_FRONTLIGHT` for a
+fixed level instead. If the light doesn't react, *Collect diagnostics* lists
+the input devices, and `KV_TOUCH_DEV` can name the right one.
+
 ### 24/7 notes
 
 - Keep it on the charger. The wifi and the front light drain the battery
