@@ -388,6 +388,10 @@ ul{list-style:none;margin:0;padding:0}
 .empty{padding:40px 0;text-align:center;font-size:1.1em}
 .plist a{display:block;padding:14px 0;border-bottom:1px solid #000;text-decoration:none}
 .open{display:block;color:#000;text-decoration:none}
+.row .body.link{padding:0}
+.body.link .open{padding:10px 0;min-height:2.4em}
+.arrow{display:table-cell;width:1%;vertical-align:middle;padding:0 6px 0 16px;text-decoration:none}
+.chev{display:block;width:.55em;height:.55em;margin-right:4px;border:solid #000;border-width:.2em .2em 0 0;-webkit-transform:rotate(45deg);transform:rotate(45deg)}
 .head>.row{border-bottom:none}
 .head .title{font-size:1.25em;font-weight:bold}
 .parent{font-size:.75em;margin:0 0 6px}
@@ -613,13 +617,15 @@ class Renderer:
         ctx["seen"].add(tid)
         if not done:
             ctx["parents"].append((tid, depth, t.get("title") or ""))
+        href = f"/t/{tid}?p={ctx['pid']}"
         out = [
             f'<li class="task{" done" if done else ""}" data-id="{tid}" data-depth="{depth}"'
             f' data-title="{esc(t.get("title"))}"><div class="row">'
             f'{self._toggle_form(t, ctx["back"])}'
-            f'<div class="body"><a class="open" href="/t/{tid}?p={ctx["pid"]}">'
+            f'<div class="body link"><a class="open" href="{href}">'
             f'<span class="title">{esc(t.get("title"))}</span>'
-            f'{self._meta(t, kids, ctx["now"])}</a></div></div>'
+            f'{self._meta(t, kids, ctx["now"])}</a></div>'
+            f'<a class="arrow" href="{href}"><span class="chev"></span></a></div>'
         ]
         sub = []
         if ctx["nest"] and depth < MAX_DEPTH:
