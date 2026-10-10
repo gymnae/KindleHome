@@ -223,6 +223,16 @@ def sort_key(mode):
     return lambda t: (*due(t), prio(t), t.get("id", 0))
 
 
+def assignee_names(task):
+    """Display names of a task's assignees (full name, else username)."""
+    names = []
+    for user in task.get("assignees") or []:
+        name = (user.get("name") or "").strip() or (user.get("username") or "").strip()
+        if name:
+            names.append(name)
+    return names
+
+
 def _rel(task, kind):
     return (task.get("related_tasks") or {}).get(kind) or []
 
@@ -390,6 +400,7 @@ ul{list-style:none;margin:0;padding:0}
 .due.over{background:#000;color:#fff;padding:0 4px;font-weight:bold}
 .prio{font-weight:bold}
 .lbl{border:1px solid #000;padding:0 4px}
+.who{font-weight:bold;font-style:italic}
 .empty{padding:40px 0;text-align:center;font-size:1.1em}
 .plist a{display:block;padding:14px 0;border-bottom:1px solid #000;text-decoration:none}
 .open{display:block;color:#000;text-decoration:none}
@@ -627,6 +638,9 @@ class Renderer:
         if d:
             over = " over" if d < now and not t.get("done") else ""
             parts.append(f'<span class="due{over}">{esc(self.fmt_date(d, now))}</span>')
+        names = assignee_names(t)
+        if names:
+            parts.append(f'<span class="who">{esc(", ".join(names))}</span>')
         sub = kids.get(t["id"])
         if sub:
             parts.append(f'<span class="cnt">{sum(1 for s in sub if s.get("done"))}/{len(sub)}</span>')

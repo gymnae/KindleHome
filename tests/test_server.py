@@ -21,7 +21,9 @@ class FakeVikunja:
     def __init__(self):
         self.tasks = {
             1: {"id": 1, "title": "Buy milk", "done": False, "project_id": 1, "description": "keep me",
-                "priority": 4, "due_date": "2020-01-01T10:00:00Z", "labels": [{"title": "shop"}]},
+                "priority": 4, "due_date": "2020-01-01T10:00:00Z", "labels": [{"title": "shop"}],
+                "assignees": [{"id": 1, "username": "anna", "name": "Anna <A>"},
+                              {"id": 2, "username": "ben", "name": ""}]},
             2: {"id": 2, "title": "Clean <kitchen>", "done": False, "project_id": 1,
                 "due_date": "0001-01-01T00:00:00Z",
                 "description": '<p>Use <b>soap</b><script>alert(1)</script><img src="x" onerror="y"></p>'
@@ -191,6 +193,8 @@ class TaskTests(ServerTest):
         self.assertIn('<span class="prio">!!</span>', body)
         self.assertIn('class="due over"', body)
         self.assertIn('<span class="lbl">shop</span>', body)
+        self.assertIn('<span class="who">Anna &lt;A&gt;, ben</span>', body)   # name, else username
+        self.assertEqual(body.count('class="who"'), 1)
         self.assertIn('<option value="3">– Wipe counters</option>', body)
 
     def test_fragment(self):
@@ -315,6 +319,10 @@ class UnitTests(unittest.TestCase):
         self.assertEqual(kv.description_html("a <3\nb"), "a &lt;3<br>b")
         self.assertEqual(kv.description_html("<p></p>"), "")
         self.assertEqual(kv.description_html("<b>x"), "<strong>x</strong>")
+
+    def test_assignee_names(self):
+        self.assertEqual(kv.assignee_names({"assignees": None}), [])
+        self.assertEqual(kv.assignee_names({"assignees": [{"username": "x", "name": " "}, {}]}), ["x"])
 
     def test_null_date(self):
         self.assertIsNone(kv.parse_date("0001-01-01T00:00:00Z"))

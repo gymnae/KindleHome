@@ -10,7 +10,8 @@ touch-enabled todo list for one project of a self-hosted
 - Tap a task's text to open its detail page, with the description, its subtasks (tickable,
   tappable to go deeper), its parent task and a field to add a subtask
 - Add new tasks, optionally as a subtask of an existing task
-- Due dates (overdue ones shown inverted), priority (`!`–`!!!`), labels, subtask progress
+- Due dates (overdue ones shown inverted), priority (`!`–`!!!`), assignees (in *bold italics*),
+  labels, subtask progress
 - Re-syncs automatically, but only redraws when something changed (saves e-ink flashes)
 
 ```
