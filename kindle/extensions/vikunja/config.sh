@@ -9,5 +9,9 @@ KV_URL="http://192.168.0.31:8080/p/3"
 # 0 = never.
 KV_RELAUNCH_HOURS=12
 
+# Hide the Kindle's top bar (status line + browser toolbar) for a fullscreen page.
+# 1 = hide, 0 = keep. KUAL "Show top bar" or "Stop" brings it back.
+KV_HIDE_BARS=1
+
 # Frontlight level (0-24) while the display runs. Empty = leave unchanged.
 KV_FRONTLIGHT=""

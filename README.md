@@ -113,8 +113,11 @@ After a reboot, run *Start todo display* again (it is not started automatically)
 - Auto-refresh pauses while you type or right after you tapped something.
 - *Refresh* in the header reloads the whole page, which also clears e-ink
   ghosting. The page does a full reload on its own every 6 hours as well.
-- To hide the browser's address bar, use the browser menu. Options vary by
-  firmware.
+- **Fullscreen:** by default the top bar (status line and browser toolbar)
+  is hidden a few seconds after the page opens (`KV_HIDE_BARS` in
+  `config.sh`). To bring it back, use KUAL → *Show top bar*, *Stop*, or a
+  reboot. With the bar hidden, the KUAL launcher is reached through the Home
+  button / home screen as usual.
 - To change the font size, set `FONT_SIZE` on the server (default 24px).
 
 ### 24/7 notes
