@@ -29,7 +29,10 @@ Shopping list:
 - Items are grouped by KitchenOwl category. Tap the box to tick an item off
 - Tap the note next to an item (`+` when empty) to edit it, e.g. "2 l"
 - "Recently bought" items: tick one to put it back on the list
-- Add items with the field at the top. Known items are reused, new ones created
+- Add items with the field at the top. As you type, KitchenOwl's suggestions
+  appear below the field (with icons). Tap one to add it. Amounts work as in
+  the app: "milk 2l" adds *Milk* with the note "2l"
+- Item icons as in the app (see below)
 
 ```
 ┌──────────┐  plain HTTP (LAN)  ┌────────────────┐  HTTPS + API tokens  ┌────────────┐
@@ -72,6 +75,17 @@ list are optional: by default the user's first household and its default
 shopping list are used. Otherwise take the household number from the
 KitchenOwl web URL and set `KITCHENOWL_HOUSEHOLD_ID`, and `KITCHENOWL_LIST_ID`
 for a specific list.
+
+**Icons:** KitchenOwl's item icons are by Icons8 and may not be
+redistributed, so they are not part of this repository. The server instead
+loads the icon font from *your* KitchenOwl at runtime
+(`<KITCHENOWL_URL>/assets/fonts/Items.ttf`) and serves it to the Kindle. The
+name → icon map comes from KitchenOwl's source (`item_icons.dart`, fetched
+from GitHub). The server only turns icons on if that map matches your font
+exactly, because a map from another KitchenOwl version would show wrong
+icons. If no icons appear, the server log says why. Usually the fix is to
+point `KITCHENOWL_ICON_MAP_URL` at the file for your KitchenOwl version. Set
+`KITCHENOWL_ICONS=0` to turn them off.
 
 ## 2. Run the server
 

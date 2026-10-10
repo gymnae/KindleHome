@@ -17,7 +17,9 @@ import json
 import os
 import re
 import ssl
+import struct
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -106,6 +108,13 @@ class Config:
         self.timeout = float(env.get("VIKUNJA_TIMEOUT", "15"))
         self.verify_tls = env.get("VIKUNJA_VERIFY_TLS", "1").lower() not in ("0", "false", "no")
         self.ko_verify_tls = env.get("KITCHENOWL_VERIFY_TLS", "1").lower() not in ("0", "false", "no")
+        # Item icons: KitchenOwl's icon font (Icons8, not redistributable) is fetched from your own
+        # instance at runtime; the name -> character map from KitchenOwl's source.
+        self.ko_icons = env.get("KITCHENOWL_ICONS", "1").lower() not in ("0", "false", "no")
+        self.ko_icon_font_url = (env.get("KITCHENOWL_ICON_FONT_URL", "").strip()
+                                 or (ko_url[:-len("/api")] + "/assets/fonts/Items.ttf" if ko_url else ""))
+        self.ko_icon_map_url = env.get("KITCHENOWL_ICON_MAP_URL", "").strip() or (
+            "https://raw.githubusercontent.com/TomBursch/kitchenowl/main/kitchenowl/lib/item_icons.dart")
 
 
 # --------------------------------------------------------------------------
@@ -305,6 +314,10 @@ class KitchenOwl(JsonApi):
             lst["recentItems"] = []
         return lst
 
+    def search(self, query):
+        """Item suggestions for a typed text (KitchenOwl splits off amounts into "description")."""
+        return self.request("GET", f"/household/{self.household_id()}/item/search", {"query": query})[0] or []
+
     def add(self, list_id, name):
         return self.request("POST", f"/shoppinglist/{list_id}/add-item-by-name", body={"name": name})[0]
 
@@ -320,6 +333,86 @@ class KitchenOwl(JsonApi):
 
 def _shop_item_key(item):
     return (item.get("ordering") or 0, (item.get("name") or "").lower())
+
+
+def ttf_codepoints(data):
+    """Set of code points mapped by a TrueType font's cmap table (formats 4 and 12)."""
+    num_tables = struct.unpack(">H", data[4:6])[0]
+    for i in range(num_tables):
+        tag, _, offset, _ = struct.unpack(">4sIII", data[12 + 16 * i: 28 + 16 * i])
+        if tag == b"cmap":
+            break
+    else:
+        raise ValueError("no cmap table")
+    points = set()
+    count = struct.unpack(">H", data[offset + 2: offset + 4])[0]
+    for i in range(count):
+        _, _, sub_offset = struct.unpack(">HHI", data[offset + 4 + 8 * i: offset + 12 + 8 * i])
+        at = offset + sub_offset
+        fmt = struct.unpack(">H", data[at: at + 2])[0]
+        if fmt == 4:
+            segs = struct.unpack(">H", data[at + 6: at + 8])[0] // 2
+            ends = struct.unpack(f">{segs}H", data[at + 14: at + 14 + 2 * segs])
+            starts = struct.unpack(f">{segs}H", data[at + 16 + 2 * segs: at + 16 + 4 * segs])
+            for start, end in zip(starts, ends):
+                if start != 0xFFFF:
+                    points.update(range(start, end + 1))
+        elif fmt == 12:
+            groups = struct.unpack(">I", data[at + 12: at + 16])[0]
+            for g in range(groups):
+                start, end, _ = struct.unpack(">III", data[at + 16 + 12 * g: at + 28 + 12 * g])
+                points.update(range(start, end + 1))
+    return points
+
+
+def parse_icon_map(dart_source):
+    """{icon name: code point} from KitchenOwl's generated item_icons.dart."""
+    consts = {name: int(cp, 0) for name, cp in
+              re.findall(r"static const IconData (\w+)\s*=\s*IconData\(\s*(0x[0-9a-fA-F]+|\d+)", dart_source)}
+    return {key: consts[ident] for key, ident in re.findall(r'"([^"]+)"\s*:\s*(\w+)\s*,', dart_source)
+            if ident in consts}
+
+
+class IconFont:
+    """KitchenOwl item icons, loaded lazily (and retried every 30 min after a failure)."""
+
+    RETRY = 1800
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.font, self.icons, self._failed_at = None, None, 0
+        self._lock = threading.Lock()
+        self._ko_ctx = None if cfg.ko_verify_tls else ssl._create_unverified_context()
+
+    def _get(self, url, ctx=None):
+        req = urllib.request.Request(url, headers={"User-Agent": "kindle-vikunja"})
+        with urllib.request.urlopen(req, timeout=self.cfg.timeout, context=ctx) as resp:
+            return resp.read()
+
+    def mapping(self):
+        """{icon name: code point}, or None if icons are unavailable."""
+        if self.icons is not None or not self.cfg.ko_icons:
+            return self.icons
+        with self._lock:
+            if self.icons is None and time.time() - self._failed_at > self.RETRY:
+                self._load()
+        return self.icons
+
+    def _load(self):
+        try:
+            font = self._get(self.cfg.ko_icon_font_url, self._ko_ctx)
+            icons = parse_icon_map(self._get(self.cfg.ko_icon_map_url).decode("utf-8", "replace"))
+            in_font = {cp for cp in ttf_codepoints(font) if cp >= 0x100}
+            # code points are assigned alphabetically: a map from another KitchenOwl version would
+            # show wrong icons, so only accept an exact match
+            if not icons or set(icons.values()) != in_font:
+                raise ValueError(f"icon map ({len(icons)} icons) does not match the font ({len(in_font)} glyphs); "
+                                 "set KITCHENOWL_ICON_MAP_URL to item_icons.dart of your KitchenOwl version")
+            self.font, self.icons = font, icons
+            sys.stderr.write(f"KitchenOwl icons loaded: {len(icons)}\n")
+        except Exception as e:  # noqa: BLE001 - icons are optional, never break the page
+            self._failed_at = time.time()
+            sys.stderr.write(f"KitchenOwl icons unavailable: {e}\n")
 
 
 def _flatten_buckets(items):
@@ -704,6 +797,12 @@ ul{list-style:none;margin:0;padding:0}
 .tile li .due{font-size:.8em;margin-left:6px}
 .tile .tmore{font-size:.7em;margin-top:4px}
 .tile .terr{font-weight:bold;font-size:.8em;margin-top:6px}
+@font-face{font-family:KOItems;src:url(/ko/items.ttf) format("truetype")}
+.koi{display:inline-block;width:1.4em;margin-right:.3em;font-family:KOItems;font-size:1.3em;line-height:1;text-align:center;vertical-align:middle;font-weight:normal;font-style:normal}
+.tile .koi{font-size:1.1em;width:1.3em}
+#sugg button{display:block;width:100%;margin:0;padding:8px 4px;border:0;border-bottom:1px dotted #000;background:#fff;color:#000;font:inherit;text-align:left;-webkit-appearance:none;border-radius:0}
+#sugg{margin:0 0 8px;border-top:2px solid #000}
+#sugg:empty{display:none}
 .note{display:inline-block;min-width:1.6em;padding:2px 4px;text-align:center}
 .plist a{display:block;padding:14px 0;border-bottom:1px solid #000;text-decoration:none}
 .open{display:block;color:#000;text-decoration:none}
@@ -880,6 +979,17 @@ JS = r"""
     } else if (hasCls(f, "ren")) {
       ev.preventDefault();
       saveEdit(f);
+    } else if (hasCls(f, "pick")) {   // autocomplete suggestion
+      ev.preventDefault();
+      status("\u2026");
+      xhr("POST", f.action, serialize(f), function (ok, r) {
+        if (!ok) { status(errText(r), true); return; }
+        $("title").value = "";
+        $("title").blur();
+        $("sugg").innerHTML = "";
+        lastAct = 0;
+        refresh();
+      });
     } else if (f.id === "add") {
       ev.preventDefault();
       var title = f.elements["title"];
@@ -889,6 +999,7 @@ JS = r"""
         if (!ok) { status(errText(r), true); return; }
         title.value = "";
         title.blur();
+        if ($("sugg")) $("sugg").innerHTML = "";
         if (!CFG.list) { location.reload(); return; }
         lastAct = 0;
         refresh();
@@ -912,6 +1023,23 @@ JS = r"""
     if (t - loadedAt > CFG.reloadHours * 3600000) { location.reload(); return; }
     if (t - lastRefresh >= CFG.refresh * 1000) refresh();
   }, 5000);
+
+  // Shopping list autocomplete: poll the input (key events from the Kindle keyboard are unreliable).
+  if (CFG.suggest && $("title")) {
+    var lastQ = "", sugTimer = null;
+    setInterval(function () {
+      var q = $("title").value.replace(/^\s+|\s+$/g, "");
+      if (q === lastQ) return;
+      lastQ = q;
+      clearTimeout(sugTimer);
+      if (q.length < 2) { $("sugg").innerHTML = ""; return; }
+      sugTimer = setTimeout(function () {
+        xhr("GET", CFG.suggest + "?q=" + encodeURIComponent(q), null, function (ok, r) {
+          if (ok && $("title").value.replace(/^\s+|\s+$/g, "") === q) $("sugg").innerHTML = r.responseText;
+        });
+      }, 300);
+    }, 500);
+  }
 
   // Kiosk app (kindle/extensions/vikunja/app): the page runs in a frame there,
   // and only the app itself may talk to the Kindle, so ask it to exit.
@@ -947,9 +1075,10 @@ JS = r"""
 
 
 class Renderer:
-    def __init__(self, cfg):
+    def __init__(self, cfg, icons=None):
         self.cfg = cfg
         self.t = STRINGS.get(cfg.lang, STRINGS["en"])
+        self.icons = icons  # IconFont (KitchenOwl item icons) or None
 
     # -- building blocks ---------------------------------------------------
 
@@ -1171,7 +1300,7 @@ class Renderer:
 
     def shop_tile(self, lst, max_lines=6):
         items = sorted(lst.get("items") or [], key=_shop_item_key)
-        lines = [esc(i.get("name")) + (f' <span class="due">{esc(i["description"])}</span>'
+        lines = [self._koi(i) + esc(i.get("name")) + (f' <span class="due">{esc(i["description"])}</span>'
                                        if i.get("description") else "") for i in items[:max_lines]]
         return self._tile(f"/s/{lst['id']}", lst.get("name") or "KitchenOwl",
                           self.t["item_count"].format(n=len(items)), lines, len(items) - len(lines))
@@ -1190,6 +1319,25 @@ class Renderer:
 
     # -- KitchenOwl shopping list --------------------------------------------
 
+    def _koi(self, item):
+        """KitchenOwl item icon (empty if unavailable)."""
+        icons = self.icons.mapping() if self.icons else None
+        cp = icons.get(item.get("icon") or "") if icons else None
+        return f'<span class="koi">&#{cp};</span>' if cp else ""
+
+    def suggestions(self, lid, items, limit=6):
+        rows = []
+        for item in items[:limit]:
+            desc = item.get("description") or ""
+            rows.append(
+                f'<form class="pick" method="post" action="/s/{lid}/pick">'
+                f'<input type="hidden" name="id" value="{item["id"]}">'
+                f'<input type="hidden" name="desc" value="{esc(desc)}">'
+                f'<input type="hidden" name="back" value="/s/{lid}">'
+                f'<button type="submit">{self._koi(item)}{esc(item.get("name"))}'
+                + (f' <span class="meta">{esc(desc)}</span>' if desc else "") + "</button></form>")
+        return "".join(rows)
+
     def _shop_row(self, lid, item, done):
         iid, desc = item["id"], item.get("description") or ""
         form = self._toggle_form({"id": iid, "done": done}, f"/s/{lid}", f"/s/{lid}/toggle",
@@ -1200,7 +1348,8 @@ class Renderer:
             note = (f' <span class="meta"><span class="note edit" data-empty="+"'
                     f'{_edit_attrs(f"/s/{lid}/item/{iid}/desc")}>{esc(desc) or "+"}</span></span>')
         return (f'<li class="task{" done" if done else ""}" data-id="{iid}"><div class="row">{form}'
-                f'<div class="body"><span class="title">{esc(item.get("name"))}</span>{note}</div></div></li>')
+                f'<div class="body">{self._koi(item)}<span class="title">{esc(item.get("name"))}</span>{note}'
+                '</div></div></li>')
 
     def shop_list(self, lst):
         lid, t = lst["id"], self.t
@@ -1235,9 +1384,10 @@ class Renderer:
             f'<span id="upd">{dt.datetime.now().strftime("%H:%M")}</span>{self._home_link()}'
             f'<a href="/s/{lid}">{esc(t["refresh"])}</a>{self._exit_link()}</div></div>'
             + self._add_form(f"/s/{lid}/add", t["new_item"])
-            + f'<div id="status"></div><div id="list">{list_html}</div>'
+            + f'<div id="sugg"></div><div id="status"></div><div id="list">{list_html}</div>'
         )
-        return self.layout(title, body, self._script(list=f"/s/{lid}/list", **self._home_return()))
+        return self.layout(title, body, self._script(list=f"/s/{lid}/list", suggest=f"/s/{lid}/suggest",
+                                                     **self._home_return()))
 
     def projects_page(self, projects):
         ids = {p["id"] for p in projects}
@@ -1290,12 +1440,12 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- plumbing ----------------------------------------------------------
 
-    def _send(self, status, body, ctype="text/html; charset=utf-8", headers=None):
+    def _send(self, status, body, ctype="text/html; charset=utf-8", headers=None, cache="no-store"):
         data = body.encode("utf-8") if isinstance(body, str) else body
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache)
         if self._cookie:
             self.send_header("Set-Cookie", self._cookie)
         for k, v in (headers or {}).items():
@@ -1360,6 +1510,11 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/dash/list":
             return self._send(200, self._tiles(), headers={
                 "X-Updated": dt.datetime.now().strftime("%H:%M"), "X-Today": self.render.today()})
+        if path == "/ko/items.ttf":
+            icons = self.render.icons
+            if not icons or not icons.mapping():
+                return self._send(404, "no icon font", "text/plain")
+            return self._send(200, icons.font, "font/ttf", cache="max-age=604800")
         if path == "/shop" or path.startswith("/s/"):
             if not self.ko:
                 return self._send(404, self.render.message_page(
@@ -1415,7 +1570,7 @@ class Handler(BaseHTTPRequestHandler):
     def _shop_route(self, method, path):
         if method == "GET" and path == "/shop":
             return self._redirect(f"/s/{self.ko.shopping_list()['id']}")
-        m = re.fullmatch(r"/s/(\d+)(/list|/add|/toggle|/item/(\d+)/desc)?", path)
+        m = re.fullmatch(r"/s/(\d+)(/list|/add|/toggle|/pick|/suggest|/item/(\d+)/desc)?", path)
         if not m:
             return self._send(404, self.render.message_page("404", path))
         lid, action = m.group(1), m.group(2)
@@ -1425,6 +1580,9 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and action == "/list":
             return self._send(200, self.render.shop_list(self.ko.shopping_list(lid)),
                               headers={"X-Updated": dt.datetime.now().strftime("%H:%M")})
+        if method == "GET" and action == "/suggest":
+            q = " ".join(self._query.get("q", [""])[0].split())[:128]
+            return self._send(200, self.render.suggestions(lid, self.ko.search(q) if len(q) >= 2 else []))
         if method != "POST" or action is None:
             return self._send(404, self.render.message_page("404", path))
         form = self._form()
@@ -1433,7 +1591,18 @@ class Handler(BaseHTTPRequestHandler):
             name = " ".join(form.get("title", "").split())[:128]
             if not name:
                 return self._send(400, "empty name", "text/plain") if self._ajax() else self._redirect(f"/s/{lid}")
-            self.ko.add(lid, name)
+            # "milk 2l": an existing item plus an amount -> add that item with the amount as its note
+            for hit in self.ko.search(name):
+                hit_name, desc = (hit.get("name") or "").lower(), (hit.get("description") or "").strip()
+                if desc and hit_name and " ".join(name.lower().replace(hit_name, " ", 1).split()) == desc.lower():
+                    self.ko.set_description(lid, hit["id"], desc)
+                    break
+            else:
+                self.ko.add(lid, name)
+        elif action == "/pick":
+            if not form.get("id", "").isdigit():
+                return self._send(400, "bad item id", "text/plain")
+            self.ko.set_description(lid, form["id"], form.get("desc", "")[:250])
         elif action == "/toggle":
             if not form.get("id", "").isdigit():
                 return self._send(400, "bad item id", "text/plain")
@@ -1522,7 +1691,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def make_server(cfg):
     handler = type("BoundHandler", (Handler,), {
-        "cfg": cfg, "render": Renderer(cfg),
+        "cfg": cfg, "render": Renderer(cfg, IconFont(cfg) if cfg.kitchenowl and cfg.ko_icons else None),
         "api": Vikunja(cfg) if cfg.vikunja else None,
         "ko": KitchenOwl(cfg) if cfg.kitchenowl else None})
     return ThreadingHTTPServer((cfg.host, cfg.port), handler)

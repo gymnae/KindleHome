@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import struct
 import sys
 import threading
 import unittest
@@ -130,13 +131,38 @@ class FakeVikunja:
         return H
 
 
+def make_ttf(codepoints):
+    """A minimal TrueType file: just a table directory and a format 4 cmap."""
+    cps = sorted(codepoints) + [0xFFFF]
+    n = len(cps)
+    zeros = struct.pack(f">{n}H", *[0] * n)
+    sub = (struct.pack(">7H", 4, 16 + 8 * n, 0, 2 * n, 0, 0, 0) + struct.pack(f">{n}H", *cps)
+           + struct.pack(">H", 0) + struct.pack(f">{n}H", *cps) + zeros + zeros)
+    cmap = struct.pack(">HH", 0, 1) + struct.pack(">HHI", 3, 1, 12) + sub
+    return struct.pack(">IHHHH", 0x00010000, 1, 0, 0, 0) + struct.pack(">4sIII", b"cmap", 0, 28, len(cmap)) + cmap
+
+
+ICON_DART = """
+class ItemIcons {
+  static const Map<String, IconData> map = {
+    "apple": apple,
+    "milk": milk,
+    "soap": soap,
+  };
+  static const IconData apple = IconData(256, fontFamily: _kFontFam, fontPackage: _kFontPkg);
+  static const IconData milk = IconData(257, fontFamily: _kFontFam, fontPackage: _kFontPkg);
+  static const IconData soap = IconData(0x102, fontFamily: _kFontFam, fontPackage: _kFontPkg);
+}
+"""
+
+
 class FakeKitchenOwl:
     """Minimal in-memory imitation of the KitchenOwl API."""
 
     def __init__(self):
         self.catalog = {
-            1: {"id": 1, "name": "Milk", "category": {"id": 2, "name": "Dairy", "ordering": 1}},
-            2: {"id": 2, "name": "Apples", "category": {"id": 1, "name": "Fruit", "ordering": 0}},
+            1: {"id": 1, "name": "Milk", "icon": "milk", "category": {"id": 2, "name": "Dairy", "ordering": 1}},
+            2: {"id": 2, "name": "Apples", "icon": "apple", "category": {"id": 1, "name": "Fruit", "ordering": 0}},
             3: {"id": 3, "name": "Soap", "category": None},
             4: {"id": 4, "name": "Bread <fresh>"},
         }
@@ -144,6 +170,7 @@ class FakeKitchenOwl:
         self.recent = [4, 1]                        # recently removed items
         self.requests = []
         self.down = False
+        self.font = make_ttf([256, 257, 258])
 
     def item(self, iid, description=""):
         return dict(self.catalog[iid], description=description)
@@ -153,10 +180,10 @@ class FakeKitchenOwl:
             def log_message(self, *a):
                 pass
 
-            def reply(self, code, data):
-                body = json.dumps(data).encode()
+            def reply(self, code, data, ctype="application/json"):
+                body = data if isinstance(data, bytes) else json.dumps(data).encode()
                 self.send_response(code)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", ctype)
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -167,9 +194,13 @@ class FakeKitchenOwl:
             def handle_any(self, method):
                 if fake.down:
                     return self.reply(500, {"msg": "boom"})
+                u = urllib.parse.urlsplit(self.path)
+                if u.path == "/assets/fonts/Items.ttf":   # static web app assets: no auth
+                    return self.reply(200, fake.font, "font/ttf")
+                if u.path == "/src/item_icons.dart":
+                    return self.reply(200, ICON_DART.encode(), "text/plain")
                 if self.headers.get("Authorization") != "Bearer ko-secret":
                     return self.reply(401, {"msg": "Unauthorized"})
-                u = urllib.parse.urlsplit(self.path)
                 body = self.body()
                 fake.requests.append((method, u.path, body))
                 if method == "GET" and u.path == "/api/household":
@@ -179,6 +210,11 @@ class FakeKitchenOwl:
                     recent = [fake.item(i) for i in fake.recent]
                     return self.reply(200, [{"id": 9, "name": "Hardware", "items": [], "recentItems": []},
                                             {"id": 7, "name": "Groceries", "items": items, "recentItems": recent}])
+                if method == "GET" and u.path == "/api/household/4/item/search":
+                    q = urllib.parse.parse_qs(u.query)["query"][0]
+                    name, _, desc = q.partition(" ")
+                    return self.reply(200, [fake.item(i, desc) for i, it in fake.catalog.items()
+                                            if name.lower() in it["name"].lower()])
                 if method == "POST" and u.path == "/api/shoppinglist/7/add-item-by-name":
                     match = [i for i, it in fake.catalog.items() if it["name"].lower() == body["name"].lower()]
                     iid = match[0] if match else max(fake.catalog) + 1
@@ -238,7 +274,8 @@ class ServerTest(unittest.TestCase):
             ko = serve(ThreadingHTTPServer(("127.0.0.1", 0), self.ko.handler()))
             self.servers.append(ko)
             env.update({"KITCHENOWL_URL": f"http://127.0.0.1:{ko.server_port}", "KITCHENOWL_TOKEN": "ko-secret",
-                        "KITCHENOWL_LIST_ID": "7"})
+                        "KITCHENOWL_LIST_ID": "7",
+                        "KITCHENOWL_ICON_MAP_URL": f"http://127.0.0.1:{ko.server_port}/src/item_icons.dart"})
         env.update(self.extra_env)
         self.app = serve(kv.make_server(kv.Config(env)))
         self.servers.append(self.app)
@@ -255,9 +292,9 @@ class ServerTest(unittest.TestCase):
         r = urllib.request.Request(self.base + path, data=body, headers=headers or {})
         try:
             resp = self.opener.open(r)
-            return resp.status, resp.read().decode(), resp.headers
+            return resp.status, resp.read().decode("utf-8", "replace"), resp.headers
         except urllib.error.HTTPError as e:
-            return e.code, e.read().decode(), e.headers
+            return e.code, e.read().decode("utf-8", "replace"), e.headers
 
 
 class TaskTests(ServerTest):
@@ -529,6 +566,55 @@ class DashboardTests(ServerTest):
         status, body, _ = self.req("/s/99")
         self.assertEqual(status, 502)
         self.assertIn("not found", body)
+
+
+class KitchenOwlExtrasTests(ServerTest):
+    kitchenowl = True
+    ajax = {"X-Requested-With": "XMLHttpRequest"}
+
+    def test_icons_from_own_instance(self):
+        _, body, _ = self.req("/s/7")
+        self.assertIn('<span class="koi">&#257;</span><span class="title">Milk</span>', body)
+        self.assertIn('<span class="koi">&#256;</span><span class="title">Apples</span>', body)
+        self.assertIn('<span class="title">Bread &lt;fresh&gt;</span>', body)    # no icon set: none shown
+        status, font, headers = self.req("/ko/items.ttf")
+        self.assertEqual((status, headers["Content-Type"]), (200, "font/ttf"))
+        self.assertIn("max-age", headers["Cache-Control"])
+        self.assertIn('<span class="koi">&#257;</span>Milk', self.req("/")[1])  # dashboard tile
+
+    def test_mismatched_icon_map_disables_icons(self):
+        self.ko.font = make_ttf([256, 257, 258, 259])   # font from another KitchenOwl version
+        _, body, _ = self.req("/s/7")
+        self.assertNotIn('class="koi"', body)
+        self.assertEqual(self.req("/ko/items.ttf")[0], 404)
+
+    def test_autocomplete_and_pick(self):
+        _, body, _ = self.req("/s/7")
+        self.assertIn('"suggest": "/s/7/suggest"', body)
+        self.assertIn('<div id="sugg"></div>', body)
+        status, frag, _ = self.req("/s/7/suggest?q=" + urllib.parse.quote("mil 2l"))
+        self.assertEqual(status, 200)
+        self.assertIn('<form class="pick" method="post" action="/s/7/pick">', frag)
+        self.assertIn('name="desc" value="2l"', frag)
+        self.assertIn('<span class="koi">&#257;</span>Milk <span class="meta">2l</span>', frag)
+        self.assertEqual(self.req("/s/7/suggest?q=m")[1], "")      # too short: no request
+        self.ko.on_list.pop(1)
+        self.assertEqual(self.req("/s/7/pick", {"id": "1", "desc": "2l"}, self.ajax)[0], 204)
+        self.assertEqual(self.ko.on_list[1], "2l")
+
+    def test_add_with_amount_reuses_item(self):
+        self.ko.on_list.pop(1)
+        self.req("/s/7/add", {"title": "milk 3l"}, self.ajax)
+        self.assertEqual(self.ko.on_list[1], "3l")
+        self.assertNotIn("milk 3l", [it["name"] for it in self.ko.catalog.values()])
+        self.req("/s/7/add", {"title": "Rice"}, self.ajax)                 # unknown: new item
+        self.assertIn("Rice", [it["name"] for it in self.ko.catalog.values()])
+
+
+class IconUnitTests(unittest.TestCase):
+    def test_ttf_codepoints_and_map(self):
+        self.assertEqual(kv.ttf_codepoints(make_ttf([65, 256, 300])), {65, 256, 300})
+        self.assertEqual(kv.parse_icon_map(ICON_DART), {"apple": 256, "milk": 257, "soap": 258})
 
 
 class KitchenOwlOnlyTests(ServerTest):
