@@ -4,7 +4,10 @@ PIDFILE=/tmp/kindle-vikunja-watchdog.pid
 LOG=/tmp/kindle-vikunja.log
 . "$EXT/config.sh"
 
-log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+# Everything (including lipc errors) goes to the log for troubleshooting.
+exec >>"$LOG" 2>&1
+
+log() { echo "$(date '+%F %T') $*"; }
 
 # The top bar ("pillow") is the status line and browser toolbar.
 hide_bars() {
@@ -20,8 +23,13 @@ show_bars() {
 open_page() {
     log "opening $KV_URL"
     lipc-set-prop com.lab126.appmgrd start "app://com.lab126.browser?view=$KV_URL"
+}
+
+# Called by the watchdog (never from a KUAL action, which must return quickly):
+# wait until the browser is up, as it redraws the bar when it starts.
+hide_bars_if_configured() {
     if [ "${KV_HIDE_BARS:-1}" = "1" ]; then
-        sleep 4   # let the browser come up first, it redraws the bar on start
+        sleep 8
         hide_bars
     fi
 }

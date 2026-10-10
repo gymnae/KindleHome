@@ -1,6 +1,7 @@
 #!/bin/sh
 # Keep the Kindle awake and show the todo page in the browser.
 . /mnt/us/extensions/vikunja/bin/common.sh
+log "start.sh"
 
 stop_watchdog
 lipc-set-prop com.lab126.powerd preventScreenSaver 1

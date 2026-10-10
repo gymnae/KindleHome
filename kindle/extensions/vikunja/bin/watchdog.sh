@@ -4,6 +4,7 @@
 . /mnt/us/extensions/vikunja/bin/common.sh
 
 log "watchdog started"
+hide_bars_if_configured
 last=$(date +%s)
 while true; do
     sleep 60
@@ -17,7 +18,8 @@ while true; do
         # also catches the clock jumping backwards after an NTP sync
         if [ $((now - last)) -ge $((KV_RELAUNCH_HOURS * 3600)) ] || [ "$now" -lt "$last" ]; then
             open_page
-            last=$now
+            hide_bars_if_configured
+            last=$(date +%s)
         fi
     fi
 done
