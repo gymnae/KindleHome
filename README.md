@@ -115,9 +115,11 @@ After a reboot, run *Start todo display* again (it is not started automatically)
   ghosting. The page does a full reload on its own every 6 hours as well.
 - **Fullscreen:** by default the top bar (status line and browser toolbar)
   is hidden a few seconds after the page opens (`KV_HIDE_BARS` in
-  `config.sh`). To bring it back, use KUAL → *Show top bar*, *Stop*, or a
-  reboot. With the bar hidden, the KUAL launcher is reached through the Home
-  button / home screen as usual.
+  `config.sh`). The bar holds the Home button, and the Paperwhite has no
+  physical one, so hiding it means there is no on-screen way out of the
+  browser. To get out, hold the power button until the Kindle restarts (the
+  bar comes back and the display does not start again on its own). Over SSH,
+  run `sh /mnt/us/extensions/vikunja/bin/stop.sh` instead.
 - To change the font size, set `FONT_SIZE` on the server (default 24px).
 
 ### 24/7 notes
