@@ -22,6 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http import cookies
+from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 NULL_DATE_PREFIX = "0001-01-01"  # Vikunja's "no date"
@@ -37,6 +38,8 @@ STRINGS = {
         "refresh": "Refresh", "error": "Error", "offline": "offline",
         "forbidden": "Access key missing or wrong.",
         "pick": "Choose a project",
+        "back": "Back", "subtasks": "Subtasks", "parent": "Part of",
+        "new_subtask": "New subtask…",
     },
     "de": {
         "today": "heute", "tomorrow": "morgen", "yesterday": "gestern",
@@ -46,6 +49,8 @@ STRINGS = {
         "refresh": "Aktualisieren", "error": "Fehler", "offline": "offline",
         "forbidden": "Zugangsschlüssel fehlt oder ist falsch.",
         "pick": "Projekt wählen",
+        "back": "Zurück", "subtasks": "Unteraufgaben", "parent": "Teil von",
+        "new_subtask": "Neue Unteraufgabe…",
     },
 }
 
@@ -70,6 +75,8 @@ class Config:
         self.sort = env.get("SORT", "due").strip().lower()
         self.font_size = int(env.get("FONT_SIZE", "24"))
         self.lang = env.get("UI_LANG", "en").strip().lower()
+        self.list_subtasks = env.get("LIST_SUBTASKS", "1").lower() not in ("0", "false", "no")
+        self.home_after = int(env.get("DETAIL_RETURN_SECONDS", "300"))
         self.timeout = float(env.get("VIKUNJA_TIMEOUT", "15"))
         self.verify_tls = env.get("VIKUNJA_VERIFY_TLS", "1").lower() not in ("0", "false", "no")
 
@@ -155,6 +162,9 @@ class Vikunja:
 
         return self.get_all(f"/projects/{project_id}/tasks", {
             "filter_by": "done", "filter_value": "false", "filter_comparator": "equals"})
+
+    def task(self, task_id):
+        return self.request("GET", f"/tasks/{task_id}")[0]
 
     def set_done(self, task_id, done):
         # Vikunja's update overwrites every field, so send back the full task.
@@ -253,6 +263,91 @@ def esc(value):
     return html.escape("" if value is None else str(value), quote=True)
 
 
+class _Sanitizer(HTMLParser):
+    """Reduce Vikunja's (tiptap) description HTML to a safe, e-ink friendly subset."""
+
+    TAGS = {
+        "p": "p", "div": "div", "br": "br", "hr": "hr",
+        "ul": "ul", "ol": "ol", "li": "li", "blockquote": "blockquote", "pre": "pre",
+        "code": "code", "b": "strong", "strong": "strong", "i": "em", "em": "em",
+        "u": "u", "s": "s", "del": "s", "strike": "s", "mark": "strong",
+        "h1": "h3", "h2": "h3", "h3": "h3", "h4": "h4", "h5": "h4", "h6": "h4",
+        "table": "table", "thead": "thead", "tbody": "tbody", "tr": "tr", "td": "td", "th": "th",
+        "a": "u",  # links would navigate the kiosk away: keep the text only
+    }
+    VOID = {"br", "hr"}
+    SKIP = {"script", "style", "head", "title", "iframe", "object", "embed", "svg", "template"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out, self.stack, self.skip = [], [], 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP:
+            self.skip += 1
+            return
+        if self.skip:
+            return
+        if tag == "img":
+            alt = dict(attrs).get("alt")
+            if alt:
+                self.out.append(f"[{esc(alt)}]")
+            return
+        out = self.TAGS.get(tag)
+        if not out:
+            return
+        if out in self.VOID:
+            self.out.append(f"<{out}>")
+            return
+        attrs = dict(attrs)
+        if out == "li" and "data-checked" in attrs:  # tiptap checklist item
+            on = " on" if attrs.get("data-checked") == "true" else ""
+            self.out.append(f'<li class="ck{on}"><span class="box"><span class="mark"></span></span>')
+        else:
+            self.out.append(f"<{out}>")
+        self.stack.append((tag, out))
+
+    def handle_startendtag(self, tag, attrs):
+        if tag == "img" or self.TAGS.get(tag) in self.VOID:
+            self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP:
+            self.skip = max(0, self.skip - 1)
+            return
+        if self.skip or not any(t == tag for t, _ in self.stack):
+            return
+        while self.stack:
+            t, out = self.stack.pop()
+            self.out.append(f"</{out}>")
+            if t == tag:
+                break
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.out.append(esc(data))
+
+    def result(self):
+        self.close()
+        return "".join(self.out) + "".join(f"</{out}>" for _, out in reversed(self.stack))
+
+
+def has_description(value):
+    return bool(re.sub(r"<[^>]*>|&nbsp;|\s", "", value or ""))
+
+
+def description_html(value):
+    """Safe HTML for a task description ('' if it is empty)."""
+    value = value or ""
+    if not has_description(value):
+        return ""
+    if not re.search(r"<[a-zA-Z/!]", value):  # plain text / markdown from old Vikunja versions
+        return esc(value).replace("\n", "<br>")
+    sanitizer = _Sanitizer()
+    sanitizer.feed(value)
+    return sanitizer.result()
+
+
 CSS = """
 *{-webkit-box-sizing:border-box;box-sizing:border-box}
 html,body{background:#fff;color:#000}
@@ -292,13 +387,36 @@ ul{list-style:none;margin:0;padding:0}
 .lbl{border:1px solid #000;padding:0 4px}
 .empty{padding:40px 0;text-align:center;font-size:1.1em}
 .plist a{display:block;padding:14px 0;border-bottom:1px solid #000;text-decoration:none}
+.open{display:block;color:#000;text-decoration:none}
+.head>.row{border-bottom:none}
+.head .title{font-size:1.25em;font-weight:bold}
+.parent{font-size:.75em;margin:0 0 6px}
+.parent a{display:inline-block;padding:6px 0}
+h2.sec{font-size:.75em;margin:18px 0 4px;padding-bottom:2px;border-bottom:3px solid #000}
+.desc{word-wrap:break-word}
+.desc p,.desc div{margin:0 0 .5em}
+.desc ul,.desc ol{margin:0 0 .5em;padding-left:1.4em}
+.desc ul{list-style:disc}
+.desc ol{list-style:decimal}
+.desc li.ck{list-style:none;margin-left:-1.2em}
+.desc li.ck div,.desc li.ck p{display:inline;margin:0}
+.desc li.ck.on{text-decoration:line-through}
+.box{position:relative;display:inline-block;width:.9em;height:.9em;margin-right:.4em;border:2px solid #000;vertical-align:-.1em}
+.ck.on>.box .mark{display:block}
+.desc pre{white-space:pre-wrap;border:1px solid #000;padding:4px}
+.desc blockquote{margin:0 0 .5em;padding-left:8px;border-left:4px solid #000}
+.desc table{border-collapse:collapse;margin-bottom:.5em}
+.desc td,.desc th{border:1px solid #000;padding:2px 4px}
+.desc h3,.desc h4{margin:.6em 0 .3em}
 """
 
 # Plain ES5 only: the Kindle's WebKit is from ~2012.
 JS = r"""
 (function () {
   var CFG = %%CFG%%;
-  var IDLE = 15000, loadedAt = now(), lastAct = 0, lastRefresh = now(), busy = false;
+  // CFG.list: fragment URL to re-sync from (list page).
+  // CFG.home: page to go back to after CFG.homeAfter idle seconds (detail page).
+  var IDLE = 15000, loadedAt = now(), lastAct = CFG.home ? now() : 0, lastRefresh = now(), busy = false;
   var current = null;
 
   function now() { return new Date().getTime(); }
@@ -307,6 +425,10 @@ JS = r"""
   function closest(el, c) { while (el && el !== document) { if (hasCls(el, c)) return el; el = el.parentNode; } return null; }
   function status(msg, isErr) { var s = $("status"); s.textContent = msg || ""; s.className = isErr ? "err" : ""; }
   function touch() { lastAct = now(); }
+  function setCls(el, c, on) {
+    var rest = (" " + el.className + " ").replace(" " + c + " ", " ").replace(/^\s+|\s+$/g, "");
+    el.className = on ? (rest ? rest + " " : "") + c : rest;
+  }
 
   function xhr(method, url, body, cb) {
     var r = new XMLHttpRequest();
@@ -335,7 +457,7 @@ JS = r"""
 
   function rebuildParents() {
     var sel = $("parent");
-    if (!sel) return;
+    if (!sel || sel.tagName !== "SELECT" || !$("list")) return;
     var keep = sel.value, lis = $("list").getElementsByTagName("li");
     while (sel.options.length > 1) sel.remove(1);
     for (var i = 0; i < lis.length; i++) {
@@ -352,9 +474,9 @@ JS = r"""
   }
 
   function refresh() {
-    if (busy) return;
+    if (busy || !CFG.list) return;
     busy = true;
-    xhr("GET", "/p/" + CFG.pid + "/list", null, function (ok, r) {
+    xhr("GET", CFG.list, null, function (ok, r) {
       busy = false;
       lastRefresh = now();
       if (!ok) { status(errText(r), true); return; }
@@ -376,11 +498,11 @@ JS = r"""
       ev.preventDefault();
       var li = closest(f, "task"), field = f.elements["done"], target = field.value === "1";
       var body = serialize(f);
-      li.className = target ? "task done" : "task";
+      setCls(li, "done", target);
       field.value = target ? "0" : "1";
       xhr("POST", "/toggle", body, function (ok, r) {
         if (ok) { status(""); lastRefresh = 0; return; }   // re-sync once idle
-        li.className = target ? "task" : "task done";
+        setCls(li, "done", !target);
         field.value = target ? "1" : "0";
         status(errText(r), true);
       });
@@ -392,8 +514,9 @@ JS = r"""
       xhr("POST", f.action, serialize(f), function (ok, r) {
         if (!ok) { status(errText(r), true); return; }
         title.value = "";
-        f.elements["parent"].value = "";
         title.blur();
+        if (!CFG.list) { location.reload(); return; }
+        f.elements["parent"].value = "";
         lastAct = 0;
         refresh();
       });
@@ -411,12 +534,13 @@ JS = r"""
       title.value = ""; if (a && a.blur) a.blur(); typing = false;
     }
     if (typing || t - lastAct < IDLE) return;
+    if (CFG.home && t - lastAct > CFG.homeAfter * 1000) { location.href = CFG.home; return; }
     // Full reload now and then: frees browser memory and clears e-ink ghosting.
     if (t - loadedAt > CFG.reloadHours * 3600000) { location.reload(); return; }
     if (t - lastRefresh >= CFG.refresh * 1000) refresh();
   }, 5000);
 
-  current = $("list").innerHTML;
+  current = $("list") ? $("list").innerHTML : null;
   rebuildParents();
 })();
 """
@@ -470,51 +594,67 @@ class Renderer:
             parts.append(f'<span class="cnt">{sum(1 for s in sub if s.get("done"))}/{len(sub)}</span>')
         for label in t.get("labels") or []:
             parts.append(f'<span class="lbl">{esc(label.get("title"))}</span>')
+        if has_description(t.get("description")):
+            parts.append('<span class="more">\u00b6</span>')
         return f' <span class="meta">{"".join(parts)}</span>' if parts else ""
 
-    def _node(self, t, kids, back, depth, seen, parents, now):
+    def _toggle_form(self, t, back):
+        return (
+            '<form class="t" method="post" action="/toggle">'
+            f'<input type="hidden" name="id" value="{t["id"]}">'
+            f'<input type="hidden" name="done" value="{"0" if t.get("done") else "1"}">'
+            f'<input type="hidden" name="back" value="{esc(back)}">'
+            '<button type="submit" class="cb"><span class="mark"></span></button></form>'
+        )
+
+    def _node(self, t, kids, ctx, depth=0):
+        """One task row (plus nested subtasks when ctx["nest"]). Tapping the text opens details."""
         tid, done = t["id"], bool(t.get("done"))
-        seen.add(tid)
+        ctx["seen"].add(tid)
         if not done:
-            parents.append((tid, depth, t.get("title") or ""))
+            ctx["parents"].append((tid, depth, t.get("title") or ""))
         out = [
             f'<li class="task{" done" if done else ""}" data-id="{tid}" data-depth="{depth}"'
             f' data-title="{esc(t.get("title"))}"><div class="row">'
-            '<form class="t" method="post" action="/toggle">'
-            f'<input type="hidden" name="id" value="{tid}">'
-            f'<input type="hidden" name="done" value="{"0" if done else "1"}">'
-            f'<input type="hidden" name="back" value="{esc(back)}">'
-            '<button type="submit" class="cb"><span class="mark"></span></button></form>'
-            f'<div class="body"><span class="title">{esc(t.get("title"))}</span>'
-            f"{self._meta(t, kids, now)}</div></div>"
+            f'{self._toggle_form(t, ctx["back"])}'
+            f'<div class="body"><a class="open" href="/t/{tid}?p={ctx["pid"]}">'
+            f'<span class="title">{esc(t.get("title"))}</span>'
+            f'{self._meta(t, kids, ctx["now"])}</a></div></div>'
         ]
-        sub = [c for c in kids.get(tid, []) if c.get("id") not in seen] if depth < MAX_DEPTH else []
+        sub = []
+        if ctx["nest"] and depth < MAX_DEPTH:
+            sub = [c for c in kids.get(tid, []) if c.get("id") not in ctx["seen"]]
         if sub:
             out.append('<ul class="sub">')
             for c in sub:
-                if c["id"] not in seen:
-                    out.append(self._node(c, kids, back, depth + 1, seen, parents, now))
+                if c["id"] not in ctx["seen"]:
+                    out.append(self._node(c, kids, ctx, depth + 1))
             out.append("</ul>")
         out.append("</li>")
         return "".join(out)
+
+    def _script(self, **cfg):
+        cfg.update(refresh=self.cfg.refresh, reloadHours=6, error=self.t["error"], offline=self.t["offline"])
+        return "<script>" + JS.replace("%%CFG%%", json.dumps(cfg)) + "</script>"
 
     # -- pages -------------------------------------------------------------
 
     def task_list(self, project_id, tasks, now=None):
         """The refreshable part of the page. Returns (html, parent_choices)."""
-        now = now or dt.datetime.now().astimezone()
         roots, kids = build_tree(tasks, self.cfg.sort)
-        back = f"/p/{project_id}"
-        seen, parents, items = set(), [], []
+        ctx = {"back": f"/p/{project_id}", "pid": project_id, "now": now or dt.datetime.now().astimezone(),
+               "seen": set(), "parents": [], "nest": self.cfg.list_subtasks}
+        items = []
         for t in roots:
-            if t["id"] not in seen:
-                items.append(self._node(t, kids, back, 0, seen, parents, now))
-        for t in tasks:  # anything unreachable (e.g. relation cycles)
-            if t.get("id") is not None and t["id"] not in seen and not t.get("done"):
-                items.append(self._node(t, kids, back, 0, seen, parents, now))
+            if t["id"] not in ctx["seen"]:
+                items.append(self._node(t, kids, ctx))
+        if ctx["nest"]:
+            for t in tasks:  # anything unreachable (e.g. relation cycles)
+                if t.get("id") is not None and t["id"] not in ctx["seen"] and not t.get("done"):
+                    items.append(self._node(t, kids, ctx))
         if not items:
-            return f'<p class="empty">{esc(self.t["empty"])}</p>', parents
-        return '<ul id="tasks">' + "".join(items) + "</ul>", parents
+            return f'<p class="empty">{esc(self.t["empty"])}</p>', ctx["parents"]
+        return '<ul id="tasks">' + "".join(items) + "</ul>", ctx["parents"]
 
     def task_page(self, project_id, title, list_html, parents, error=None):
         t = self.t
@@ -536,11 +676,41 @@ class Renderer:
             f'<option value="">{esc(t["none"])}</option>{options}</select></div></form>'
             f'<div id="status"></div><div id="list">{list_html}</div>'
         )
-        cfg = json.dumps({
-            "pid": str(project_id), "refresh": self.cfg.refresh, "reloadHours": 6,
-            "error": t["error"], "offline": t["offline"],
-        })
-        return self.layout(title, body, "<script>" + JS.replace("%%CFG%%", cfg) + "</script>")
+        return self.layout(title, body, self._script(list=f"/p/{project_id}/list", home=None))
+
+    def detail_page(self, task, project_id, project_title, now=None):
+        """One task: its description, parent and (tickable) subtasks."""
+        t, now = self.t, now or dt.datetime.now().astimezone()
+        tid = task["id"]
+        home, here = f"/p/{project_id}", f"/t/{tid}?p={project_id}"
+        key = sort_key(self.cfg.sort)
+        subs = sorted((s for s in _rel(task, "subtask") if "id" in s),
+                      key=lambda s: (bool(s.get("done")), key(s)))
+        ctx = {"back": here, "pid": project_id, "now": now, "seen": {tid}, "parents": [], "nest": False}
+        rows = "".join(self._node(s, {}, ctx) for s in subs)
+        parents = " ".join(f'<a href="/t/{p["id"]}?p={project_id}">{esc(p.get("title"))}</a>'
+                           for p in _rel(task, "parenttask") if "id" in p)
+        desc = description_html(task.get("description"))
+        body = (
+            f'<div id="hd"><h1><a class="open" href="{home}">\u2039 {esc(project_title or t["back"])}</a></h1>'
+            f'<div class="nav"><a href="{esc(here)}">{esc(t["refresh"])}</a></div></div>'
+            f'<div id="status"></div>'
+            + (f'<div class="parent">{esc(t["parent"])}: {parents}</div>' if parents else "")
+            + f'<div class="task head{" done" if task.get("done") else ""}"><div class="row">'
+            f'{self._toggle_form(task, here)}<div class="body"><span class="title">{esc(task.get("title"))}</span>'
+            f'{self._meta(task, {tid: subs}, now)}</div></div></div>'
+            + (f'<div class="desc">{desc}</div>' if desc else "")
+            + f'<h2 class="sec">{esc(t["subtasks"])}</h2>'
+            + (f'<ul>{rows}</ul>' if rows else "")
+            + f'<form id="add" method="post" action="/p/{task.get("project_id") or project_id}/add" style="margin-top:10px">'
+            f'<input type="hidden" id="parent" name="parent" value="{tid}">'
+            '<div class="line"><div class="in">'
+            f'<input type="text" id="title" name="title" autocomplete="off" placeholder="{esc(t["new_subtask"])}">'
+            f'</div><div class="go"><button type="submit">{esc(t["add"])}</button></div></div></form>'
+        )
+        home_after = self.cfg.home_after
+        return self.layout(task.get("title") or "", body,
+                           self._script(list=None, home=home if home_after > 0 else None, homeAfter=home_after))
 
     def projects_page(self, projects):
         ids = {p["id"] for p in projects}
@@ -639,7 +809,8 @@ class Handler(BaseHTTPRequestHandler):
         path = url.path.rstrip("/") or "/"
         if path == "/healthz":
             return self._send(200, "ok", "text/plain")
-        if not self._authorized(urllib.parse.parse_qs(url.query)):
+        self._query = urllib.parse.parse_qs(url.query)
+        if not self._authorized(self._query):
             return self._send(403, self.render.message_page("403", self.render.t["forbidden"]))
         try:
             self._route(method, path)
@@ -662,6 +833,9 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and m and m.group(2) == "/list":
             html_, _ = self.render.task_list(m.group(1), self.api.open_tasks(m.group(1)))
             return self._send(200, html_, headers={"X-Updated": dt.datetime.now().strftime("%H:%M")})
+        m_task = re.fullmatch(r"/t/(\d+)", path)
+        if method == "GET" and m_task:
+            return self._detail_page(int(m_task.group(1)))
         if method == "POST" and m and m.group(2) == "/add":
             return self._add(m.group(1))
         if method == "POST" and path == "/toggle":
@@ -675,6 +849,17 @@ class Handler(BaseHTTPRequestHandler):
         list_html, parents = self.render.task_list(project_id, self.api.open_tasks(project_id))
         self._send(200, self.render.task_page(project_id, project.get("title") or "", list_html, parents))
 
+    def _detail_page(self, task_id):
+        task = self.api.task(task_id)
+        project_id = self._query.get("p", [""])[0]
+        if not re.fullmatch(r"-?\d+", project_id):
+            project_id = str(task.get("project_id"))
+        try:
+            project_title = self.api.project(project_id).get("title")
+        except VikunjaError:
+            project_title = None
+        self._send(200, self.render.detail_page(task, project_id, project_title))
+
     def _toggle(self):
         form = self._form()
         try:
@@ -685,7 +870,7 @@ class Handler(BaseHTTPRequestHandler):
         if self._ajax():
             return self._send(204, "")
         back = form.get("back", "/")
-        self._redirect(back if re.fullmatch(r"/p/-?\d+", back) else "/")
+        self._redirect(back if re.fullmatch(r"/p/-?\d+|/t/\d+(\?p=-?\d+)?", back) else "/")
 
     def _add(self, project_id):
         form = self._form()

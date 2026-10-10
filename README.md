@@ -7,6 +7,8 @@ touch-enabled todo list for one project of a self-hosted
 - Quick overview of the open tasks in a project, sorted by due date (or priority, position…)
 - Tap the box to tick a task off (or tap again to undo)
 - Subtasks are shown nested under their parent and can be ticked off, including done ones
+- Tap a task's text to open its detail page, with the description, its subtasks (tickable,
+  tappable to go deeper), its parent task and a field to add a subtask
 - Add new tasks, optionally as a subtask of an existing task
 - Due dates (overdue ones shown inverted), priority (`!`–`!!!`), labels, subtask progress
 - Re-syncs automatically, but only redraws when something changed (saves e-ink flashes)
@@ -60,6 +62,7 @@ Open `http://<server>:8080/` in a desktop browser to check that it works.
 |--------------|-----------------------------------------------|
 | `/`          | redirects to the default project (or picker)  |
 | `/p/<id>`    | the todo page for project `<id>`              |
+| `/t/<id>`    | detail page of task `<id>`                    |
 | `/projects`  | project picker                                |
 | `/healthz`   | health check                                  |
 
@@ -97,6 +100,12 @@ After a reboot, run *Start todo display* again (it is not started automatically)
 
 ### Usage tips
 
+- Tap a task's text (not the box) to open its details. `¶` in the list means the
+  task has a description, and `1/3` means 1 of 3 subtasks are done. Tap the
+  project name at the top to go back. The detail page also goes back to the
+  list on its own after 5 minutes without input (`DETAIL_RETURN_SECONDS`).
+  If the list gets too long, set `LIST_SUBTASKS=0` to show subtasks only on
+  the detail page.
 - Tap a box to tick a task off. It is struck through right away and
   disappears at the next sync. Tap again before then to undo.
 - Tap the text field to add a task with the on-screen keyboard. Choose a

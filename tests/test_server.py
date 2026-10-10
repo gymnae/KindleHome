@@ -23,7 +23,11 @@ class FakeVikunja:
             1: {"id": 1, "title": "Buy milk", "done": False, "project_id": 1, "description": "keep me",
                 "priority": 4, "due_date": "2020-01-01T10:00:00Z", "labels": [{"title": "shop"}]},
             2: {"id": 2, "title": "Clean <kitchen>", "done": False, "project_id": 1,
-                "due_date": "0001-01-01T00:00:00Z"},
+                "due_date": "0001-01-01T00:00:00Z",
+                "description": '<p>Use <b>soap</b><script>alert(1)</script><img src="x" onerror="y"></p>'
+                               '<ul data-type="taskList"><li data-checked="true" data-type="taskItem">'
+                               '<label><input type="checkbox" checked></label><div><p>sink</p></div></li></ul>'
+                               '<a href="javascript:evil()">link</a>'},
             3: {"id": 3, "title": "Wipe counters", "done": False, "project_id": 1},
             4: {"id": 4, "title": "Dishes", "done": True, "project_id": 1},
             5: {"id": 5, "title": "Other project", "done": False, "project_id": 2},
@@ -136,6 +140,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 class ServerTest(unittest.TestCase):
     access_key = ""
 
+    extra_env = {}
+
     def setUp(self):
         self.fake = FakeVikunja()
         self.vik = serve(ThreadingHTTPServer(("127.0.0.1", 0), self.fake.handler()))
@@ -143,6 +149,7 @@ class ServerTest(unittest.TestCase):
             "VIKUNJA_URL": f"http://127.0.0.1:{self.vik.server_port}",
             "VIKUNJA_TOKEN": "secret", "VIKUNJA_PROJECT_ID": "1",
             "LISTEN_HOST": "127.0.0.1", "LISTEN_PORT": "0", "ACCESS_KEY": self.access_key,
+            **self.extra_env,
         })
         self.app = serve(kv.make_server(cfg))
         self.base = f"http://127.0.0.1:{self.app.server_port}"
@@ -236,6 +243,56 @@ class TaskTests(ServerTest):
         self.assertIn("404", body)
 
 
+class DetailTests(ServerTest):
+    def test_list_rows_link_to_details(self):
+        _, body, _ = self.req("/p/1/list")
+        self.assertIn('<a class="open" href="/t/2?p=1">', body)
+        self.assertIn('<a class="open" href="/t/3?p=1">', body)   # subtasks too
+        self.assertIn('<span class="more">\u00b6</span>', body)    # has description
+
+    def test_detail_page(self):
+        status, body, _ = self.req("/t/2?p=1")
+        self.assertEqual(status, 200)
+        self.assertIn("\u2039 Home</a>", body)
+        self.assertIn('<span class="title">Clean &lt;kitchen&gt;</span>', body)
+        # description is sanitized
+        self.assertIn("<p>Use <strong>soap</strong></p>", body)
+        self.assertNotIn("alert(1)", body)
+        self.assertNotIn("onerror", body)
+        self.assertNotIn("javascript:", body)
+        self.assertIn('<li class="ck on"><span class="box">', body)
+        # subtasks are tickable rows that link further down
+        self.assertIn('name="id" value="3"', body)
+        self.assertIn('class="task done" data-id="4"', body)
+        self.assertIn('<a class="open" href="/t/4?p=1">', body)
+        # add-subtask form
+        self.assertIn('name="parent" value="2"', body)
+        self.assertIn('"home": "/p/1"', body)
+
+    def test_detail_of_subtask_links_parent(self):
+        _, body, _ = self.req("/t/3")
+        self.assertIn('href="/t/2?p=1">Clean &lt;kitchen&gt;</a>', body)
+        self.assertNotIn('class="desc"', body)
+
+    def test_toggle_from_detail_returns_there(self):
+        _, _, headers = self.req("/toggle", {"id": "3", "done": "1", "back": "/t/2?p=1"})
+        self.assertEqual(headers["Location"], "/t/2?p=1")
+        self.assertTrue(self.fake.tasks[3]["done"])
+
+    def test_missing_task(self):
+        self.assertEqual(self.req("/t/999")[0], 502)
+
+
+class FlatListTests(ServerTest):
+    extra_env = {"LIST_SUBTASKS": "0"}
+
+    def test_subtasks_only_in_details(self):
+        _, body, _ = self.req("/p/1/list")
+        self.assertIn('data-id="2"', body)
+        self.assertNotIn('data-id="3"', body)
+        self.assertIn('<span class="cnt">1/2</span>', body)
+
+
 class AccessKeyTests(ServerTest):
     access_key = "s3cret"
 
@@ -253,6 +310,11 @@ class UnitTests(unittest.TestCase):
     def test_config_appends_api_path(self):
         self.assertEqual(kv.Config({"VIKUNJA_URL": "https://v.example/"}).api_url, "https://v.example/api/v1")
         self.assertEqual(kv.Config({"VIKUNJA_URL": "https://v.example/api/v1"}).api_url, "https://v.example/api/v1")
+
+    def test_plain_text_description(self):
+        self.assertEqual(kv.description_html("a <3\nb"), "a &lt;3<br>b")
+        self.assertEqual(kv.description_html("<p></p>"), "")
+        self.assertEqual(kv.description_html("<b>x"), "<strong>x</strong>")
 
     def test_null_date(self):
         self.assertIsNone(kv.parse_date("0001-01-01T00:00:00Z"))
