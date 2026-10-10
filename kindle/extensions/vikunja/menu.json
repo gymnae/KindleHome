@@ -6,9 +6,10 @@
       "items": [
         {"name": "Start todo display", "priority": 1, "action": "/bin/sh", "params": "/mnt/us/extensions/vikunja/bin/start.sh", "exitmenu": true},
         {"name": "Reload page", "priority": 2, "action": "/bin/sh", "params": "/mnt/us/extensions/vikunja/bin/reload.sh", "exitmenu": true},
-        {"name": "Hide top bar", "priority": 3, "action": "/bin/sh", "params": "/mnt/us/extensions/vikunja/bin/bars.sh hide", "exitmenu": true},
         {"name": "Show top bar", "priority": 4, "action": "/bin/sh", "params": "/mnt/us/extensions/vikunja/bin/bars.sh show", "exitmenu": true},
-        {"name": "Stop (allow sleep again)", "priority": 5, "action": "/bin/sh", "params": "/mnt/us/extensions/vikunja/bin/stop.sh", "exitmenu": true}
+        {"name": "Test hiding top bar (20 s)", "priority": 5, "action": "/bin/sh", "params": "/mnt/us/extensions/vikunja/bin/testbars.sh", "exitmenu": true},
+        {"name": "Collect diagnostics (vikunja-diag.txt)", "priority": 6, "action": "/bin/sh", "params": "/mnt/us/extensions/vikunja/bin/diag.sh", "exitmenu": false},
+        {"name": "Stop (allow sleep again)", "priority": 7, "action": "/bin/sh", "params": "/mnt/us/extensions/vikunja/bin/stop.sh", "exitmenu": true}
       ]
     }
   ]
