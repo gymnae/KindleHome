@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Vikunja Todo</title>
+<style>
+html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #fff; }
+iframe { display: block; width: 100%; height: 100%; border: 0; }
+#msg { position: absolute; top: 40%; width: 100%; text-align: center; font: 24px sans-serif; color: #000; }
+</style>
+<!-- written by bin/start.sh from config.sh -->
+<script src="config.js"></script>
+</head>
+<body>
+<div id="msg">Loading…</div>
+<script>
+(function () {
+  var msg = document.getElementById("msg");
+
+  function home() {
+    try { kindle.appmgr.start("com.lab126.booklet.home"); }
+    catch (e) { msg.textContent = "Exit failed: " + e; }
+  }
+
+  // The todo page (another origin) asks us to exit via postMessage.
+  window.addEventListener("message", function (ev) {
+    if (ev.data === "kv-exit") home();
+  }, false);
+
+  if (!window.KV_URL) {
+    msg.textContent = "No URL configured. Start the display from KUAL.";
+    return;
+  }
+  if (window.KV_APP_MODE === "top") {   // fallback if frames misbehave
+    location.replace(window.KV_URL);
+    return;
+  }
+  var frame = document.createElement("iframe");
+  frame.onload = function () { if (msg.parentNode) msg.parentNode.removeChild(msg); };
+  frame.src = window.KV_URL;
+  document.body.appendChild(frame);
+})();
+</script>
+</body>
+</html>

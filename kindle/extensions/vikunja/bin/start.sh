@@ -1,7 +1,12 @@
 #!/bin/sh
-# Keep the Kindle awake and show the todo page in the browser.
+# Keep the Kindle awake and show the todo page.
+# Usage: start.sh [browser|fullscreen]   (default: browser)
 . /mnt/us/extensions/vikunja/bin/common.sh
-log "start.sh"
+
+MODE="${1:-browser}"
+log "start.sh $MODE"
+echo "$MODE" > "$MODEFILE"
+[ "$MODE" = "fullscreen" ] && install_app
 
 stop_watchdog
 lipc-set-prop com.lab126.powerd preventScreenSaver 1

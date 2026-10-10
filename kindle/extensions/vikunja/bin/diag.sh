@@ -19,6 +19,8 @@ log "collecting diagnostics into $OUT"
         "SELECT handlerId, name, value FROM properties WHERE handlerId LIKE '%browser%' OR value LIKE '%mesquite%' OR value LIKE '%waf%';" 2>&1
     echo "=== tools";           ls -l /usr/bin/setsid /bin/setsid /sbin/setsid /usr/bin/nohup /bin/nohup 2>&1
     echo "=== watchdog";        cat "$PIDFILE" 2>&1 && kill -0 "$(cat "$PIDFILE")" 2>&1 && echo running
+    echo "=== fullscreen app";  cat "$MODEFILE" 2>&1; cat "$EXT/app/config.js" 2>&1
+    sqlite3 "$APPREG" "SELECT * FROM properties WHERE handlerId = '$APP_ID';" 2>&1
     echo "=== mesquite apps";   ls /var/local/mesquite/ 2>&1
     for app in browser store; do
         dir=/var/local/mesquite/$app

@@ -35,7 +35,7 @@ STRINGS = {
         "weekdays": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
         "new_task": "New task…", "add": "Add", "subtask_of": "Subtask of",
         "none": "— none —", "empty": "Nothing to do.", "projects": "Projects",
-        "refresh": "Refresh", "error": "Error", "offline": "offline",
+        "refresh": "Refresh", "error": "Error", "offline": "offline", "exit": "Exit",
         "forbidden": "Access key missing or wrong.",
         "pick": "Choose a project",
         "back": "Back", "subtasks": "Subtasks", "parent": "Part of",
@@ -46,7 +46,7 @@ STRINGS = {
         "weekdays": ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"],
         "new_task": "Neue Aufgabe…", "add": "Neu", "subtask_of": "Unteraufgabe von",
         "none": "— keine —", "empty": "Nichts zu tun.", "projects": "Projekte",
-        "refresh": "Aktualisieren", "error": "Fehler", "offline": "offline",
+        "refresh": "Aktualisieren", "error": "Fehler", "offline": "offline", "exit": "Beenden",
         "forbidden": "Zugangsschlüssel fehlt oder ist falsch.",
         "pick": "Projekt wählen",
         "back": "Zurück", "subtasks": "Unteraufgaben", "parent": "Teil von",
@@ -351,13 +351,18 @@ def description_html(value):
 CSS = """
 *{-webkit-box-sizing:border-box;box-sizing:border-box}
 html,body{background:#fff;color:#000}
-body{margin:0;padding:10px 16px 60px;font:%%FS%%px/1.3 sans-serif;-webkit-text-size-adjust:none}
+body{margin:0;padding:10px 16px 90px;font:%%FS%%px/1.3 sans-serif;-webkit-text-size-adjust:none}
 a{color:#000}
 #hd{display:table;width:100%;border-bottom:4px solid #000;padding-bottom:4px;margin-bottom:8px}
 #hd h1{display:table-cell;font-size:1.35em;margin:0;vertical-align:bottom}
 #hd .nav{display:table-cell;text-align:right;vertical-align:bottom;font-size:.7em;white-space:nowrap}
 #hd .nav a{display:inline-block;padding:10px 0 4px 16px}
 #status{font-size:.7em;min-height:1.2em}
+#pager{position:fixed;bottom:10px;left:50%;width:150px;margin-left:-75px;text-align:center}
+#pager a{position:relative;display:inline-block;width:62px;height:50px;margin:0 4px;border:3px solid #000;background:#fff;vertical-align:top}
+.tri{position:absolute;left:50%;top:50%;width:0;height:0;margin-left:-13px;border-left:13px solid transparent;border-right:13px solid transparent}
+.tri.up{margin-top:-9px;border-bottom:15px solid #000}
+.tri.dn{margin-top:-6px;border-top:15px solid #000}
 #status.err{font-weight:bold}
 .banner{border:3px solid #000;padding:8px;margin:8px 0;font-weight:bold}
 #add{margin:0 0 10px}
@@ -489,6 +494,7 @@ JS = r"""
         $("list").innerHTML = r.responseText;
         current = r.responseText;
         rebuildParents();
+        updatePager();
       }
       $("upd").textContent = r.getResponseHeader("X-Updated") || "";
       status("");
@@ -543,6 +549,34 @@ JS = r"""
     if (t - loadedAt > CFG.reloadHours * 3600000) { location.reload(); return; }
     if (t - lastRefresh >= CFG.refresh * 1000) refresh();
   }, 5000);
+
+  // Kiosk app (kindle/extensions/vikunja/app): the page runs in a frame there,
+  // and only the app itself may talk to the Kindle, so ask it to exit.
+  var exitLink = $("exit"), framed = false;
+  try { framed = window.parent !== window; } catch (e) { framed = true; }
+  if (exitLink && (framed || window.kindle)) {
+    exitLink.style.display = "inline-block";
+    exitLink.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      if (window.kindle && kindle.appmgr) kindle.appmgr.start("com.lab126.booklet.home");
+      else window.parent.postMessage("kv-exit", "*");
+    }, false);
+  }
+
+  // Page up/down buttons: drag scrolling is slow on e-ink (and may be absent in the app).
+  function viewHeight() { return window.innerHeight || document.documentElement.clientHeight; }
+  function updatePager() {
+    var p = $("pager");
+    if (p) p.style.display = document.body.scrollHeight > viewHeight() + 4 ? "block" : "none";
+  }
+  function pageBy(dir) {
+    return function (ev) { ev.preventDefault(); touch(); window.scrollBy(0, dir * (viewHeight() - 90)); };
+  }
+  if ($("pgup")) {
+    $("pgup").addEventListener("click", pageBy(-1), false);
+    $("pgdn").addEventListener("click", pageBy(1), false);
+  }
+  updatePager();
 
   current = $("list") ? $("list").innerHTML : null;
   rebuildParents();
@@ -639,9 +673,14 @@ class Renderer:
         out.append("</li>")
         return "".join(out)
 
+    def _exit_link(self):
+        return f'<a id="exit" href="#" style="display:none">{esc(self.t["exit"])}</a>'
+
     def _script(self, **cfg):
+        pager = ('<div id="pager" style="display:none"><a id="pgup" href="#"><span class="tri up"></span></a>'
+                 '<a id="pgdn" href="#"><span class="tri dn"></span></a></div>')
         cfg.update(refresh=self.cfg.refresh, reloadHours=6, error=self.t["error"], offline=self.t["offline"])
-        return "<script>" + JS.replace("%%CFG%%", json.dumps(cfg)) + "</script>"
+        return pager + "<script>" + JS.replace("%%CFG%%", json.dumps(cfg)) + "</script>"
 
     # -- pages -------------------------------------------------------------
 
@@ -673,7 +712,7 @@ class Renderer:
             f'<div id="hd"><h1>{esc(title)}</h1><div class="nav">'
             f'<span id="upd">{dt.datetime.now().strftime("%H:%M")}</span>'
             f'<a href="/p/{project_id}">{esc(t["refresh"])}</a>'
-            f'<a href="/projects">{esc(t["projects"])}</a></div></div>'
+            f'<a href="/projects">{esc(t["projects"])}</a>{self._exit_link()}</div></div>'
             f'{banner}<form id="add" method="post" action="/p/{project_id}/add">'
             '<div class="line"><div class="in">'
             f'<input type="text" id="title" name="title" autocomplete="off" placeholder="{esc(t["new_task"])}">'
@@ -699,7 +738,7 @@ class Renderer:
         desc = description_html(task.get("description"))
         body = (
             f'<div id="hd"><h1><a class="open" href="{home}">\u2039 {esc(project_title or t["back"])}</a></h1>'
-            f'<div class="nav"><a href="{esc(here)}">{esc(t["refresh"])}</a></div></div>'
+            f'<div class="nav"><a href="{esc(here)}">{esc(t["refresh"])}</a>{self._exit_link()}</div></div>'
             f'<div id="status"></div>'
             + (f'<div class="parent">{esc(t["parent"])}: {parents}</div>' if parents else "")
             + f'<div class="task head{" done" if task.get("done") else ""}"><div class="row">'

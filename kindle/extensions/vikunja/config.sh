@@ -14,5 +14,9 @@ KV_RELAUNCH_HOURS=12
 # 1 = hide, 0 = keep. KUAL "Show top bar" or "Stop" brings it back.
 KV_HIDE_BARS=0
 
+# Fullscreen app only: "frame" (default) shows the page in a frame inside the app;
+# "top" navigates the app itself to the page (try this if "frame" stays blank).
+KV_APP_MODE=frame
+
 # Frontlight level (0-24) while the display runs. Empty = leave unchanged.
 KV_FRONTLIGHT=""

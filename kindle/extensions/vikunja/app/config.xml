@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<!-- Fullscreen "mesquite" web app (same mechanism as the Kindle store/browser
+     and e.g. Komic). Registered and started by bin/start.sh fullscreen. -->
+<widget xmlns="http://www.w3.org/ns/widgets"
+        xmlns:kindle="http://kindle.amazon.com/ns/widget-extensions"
+    id="com.kindlevikunja.kiosk"
+    version="1.0"
+    viewmodes="application">
+
+    <name>Vikunja Todo</name>
+    <description>Vikunja todo list display</description>
+    <content src="index.html"/>
+
+    <kindle:gestures>
+        <kindle:param name="tap" value="yes"/>
+        <kindle:param name="drag" value="no"/>
+        <kindle:param name="pinchzoom" value="no"/>
+        <kindle:param name="multi_tap" value="no"/>
+        <kindle:param name="hold" value="no"/>
+        <kindle:param name="swipe" value="no"/>
+    </kindle:gestures>
+
+    <kindle:cookiejar>
+        <kindle:asset key="persistent" value="true"/>
+        <kindle:asset key="usePrivateCookies" value="false"/>
+        <kindle:asset key="useDeviceCookies" value="false"/>
+    </kindle:cookiejar>
+
+    <kindle:network>
+        <kindle:asset key="enableCaching" value="false"/>
+    </kindle:network>
+
+    <feature name="http://kindle.amazon.com/apis" required="true">
+        <param name="appmgr" value="yes"/>
+        <param name="chrome" value="yes"/>
+        <param name="dev" value="yes"/>
+        <param name="gestures" value="yes"/>
+        <param name="messaging" value="yes"/>
+        <param name="net" value="yes"/>
+        <param name="viewport" value="yes"/>
+    </feature>
+
+    <kindle:messaging>
+        <kindle:app name="com.lab126.pillow" value="yes"/>
+        <kindle:app name="com.lab126.appmgrd" value="yes"/>
+    </kindle:messaging>
+
+    <!-- no search/tool bar: this is what makes it fullscreen -->
+    <kindle:chrome>
+        <kindle:asset key="configureSearchBar" value="none"/>
+    </kindle:chrome>
+</widget>

@@ -113,14 +113,20 @@ After a reboot, run *Start todo display* again (it is not started automatically)
 - Auto-refresh pauses while you type or right after you tapped something.
 - *Refresh* in the header reloads the whole page, which also clears e-ink
   ghosting. The page does a full reload on its own every 6 hours as well.
-- **Fullscreen (experimental, off by default):** `KV_HIDE_BARS=1` in
-  `config.sh` hides the top bar (status line and browser toolbar) a few
-  seconds after the page opens. On some firmware this breaks the display, so
-  try KUAL → *Test hiding top bar (20 s)* first, which restores the bar by itself. The bar holds the Home button, and the Paperwhite has no
-  physical one, so hiding it means there is no on-screen way out of the
-  browser. To get out, hold the power button until the Kindle restarts (the
-  bar comes back and the display does not start again on its own). Over SSH,
-  run `sh /mnt/us/extensions/vikunja/bin/stop.sh` instead.
+- **Fullscreen (experimental):** KUAL → *Start fullscreen (experimental)*
+  shows the page in a small Kindle web app of its own (`kindle/extensions/vikunja/app/`)
+  instead of the browser. It is the same mechanism the Kindle store and apps
+  like Komic use, and it has no toolbar. To do this, Start registers the app
+  in the Kindle's app registry (`/var/local/appreg.db`). KUAL → *Uninstall
+  fullscreen app* removes the entry again.
+  - Use the page's *Exit* link (only shown in the app) to get back to the
+    Kindle home screen, then KUAL → *Stop* to end the display.
+  - If the app stays blank, set `KV_APP_MODE=top` in `config.sh` and start again.
+  - If it does not work at all, use the normal *Start todo display* (browser).
+  - `KV_HIDE_BARS=1` hides the browser's top bar instead, but on firmware
+    5.6 this breaks the browser.
+- Long lists get page up/down buttons at the bottom of the screen. They are
+  quicker than drag scrolling on e-ink.
 - To change the font size, set `FONT_SIZE` on the server (default 24px).
 
 ### 24/7 notes
