@@ -9,9 +9,11 @@ touch-enabled todo list for one project of a self-hosted
 - Subtasks are listed on the task's detail page, so the main list stays uncluttered.
   Both kinds work: real subtasks, and checklist items typed in the description
   (`- [ ] item`). Both can be ticked off, done ones included
-- Tap a task's text to open its detail page, with the description, its subtasks (tickable,
-  tappable to go deeper), its parent task and a field to add a subtask
-- Add new tasks, optionally as a subtask of an existing task
+- Tap a task's text to open its detail page, with the description, its subtasks (tickable),
+  its parent task and a field to add a subtask
+- On the detail page, tap the task's title, a subtask or a checklist item to rename it
+- Add new tasks on the main page. On a detail page, new subtasks are added as `- [ ] item`
+  checklist entries to the description, as in Vikunja's editor
 - Due dates (overdue ones shown inverted), priority (`!`–`!!!`), assignees (in *bold italics*),
   labels, subtask progress
 - Re-syncs automatically, but only redraws when something changed (saves e-ink flashes)
@@ -40,7 +42,6 @@ In Vikunja go to *Settings → API Tokens → Create a token* and grant at least
 | projects         | read_all, read_one                          |
 | projects / views | read_all, (views tasks) read_all            |
 | tasks            | read_all, read_one, create, update          |
-| tasks_relations  | create (needed only for adding subtasks)    |
 
 The permission names in the UI differ a bit between versions. If anything
 fails with a 401/403, pick all permissions in these groups. Choose a long
@@ -110,8 +111,12 @@ After a reboot, run *Start todo display* again (it is not started automatically)
   To show subtasks nested in the main list as well, set `LIST_SUBTASKS=1`.
 - Tap a box to tick a task off. It is struck through right away and
   disappears at the next sync. Tap again before then to undo.
-- Tap the text field to add a task with the on-screen keyboard. Choose a
-  parent under *Subtask of* to add a subtask.
+- Tap the text field on the main page to add a task with the on-screen
+  keyboard. To add a subtask, open the task and use the field at the bottom.
+  It adds a checklist item to the task's description.
+- On a detail page, text with a dotted underline can be edited: tap the
+  title, a subtask or a checklist item, change it, then tap *Save*. Open a
+  subtask with the `›` arrow, and tick checklist items with their box.
 - Auto-refresh pauses while you type or right after you tapped something.
 - *Refresh* in the header reloads the whole page, which also clears e-ink
   ghosting. The page does a full reload on its own every 6 hours as well.

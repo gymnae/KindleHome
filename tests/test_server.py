@@ -197,7 +197,7 @@ class TaskTests(ServerTest):
         self.assertIn('<span class="lbl">shop</span>', body)
         self.assertIn('<span class="who">Anna &lt;A&gt;, ben</span>', body)   # name, else username
         self.assertEqual(body.count('class="who"'), 1)
-        self.assertIn('<option value="3">– Wipe counters</option>', body)
+        self.assertNotIn('<select', body)   # no "subtask of" picker on the main page
 
     def test_fragment(self):
         status, body, headers = self.req("/p/1/list")
@@ -260,7 +260,7 @@ class DetailTests(ServerTest):
         status, body, _ = self.req("/t/2?p=1")
         self.assertEqual(status, 200)
         self.assertIn("\u2039 Home</a>", body)
-        self.assertIn('<span class="title">Clean &lt;kitchen&gt;</span>', body)
+        self.assertIn('<span class="title edit" data-url="/t/2/rename">Clean &lt;kitchen&gt;</span>', body)
         # description is sanitized
         self.assertIn("<p>Use <strong>soap</strong></p>", body)
         self.assertNotIn("alert(1)", body)
@@ -269,12 +269,16 @@ class DetailTests(ServerTest):
         self.assertIn('<li class="ck on"><form class="ckf" method="post" action="/check">'
                       '<input type="hidden" name="id" value="2"><input type="hidden" name="i" value="0">'
                       '<input type="hidden" name="done" value="0">', body)
-        # subtasks are tickable rows that link further down
+        self.assertIn('<p class="edit" data-url="/t/2/item-text" data-i="0">sink</p>', body)
+        # subtasks are tickable rows; text renames, the arrow opens them
         self.assertIn('name="id" value="3"', body)
         self.assertIn('class="task done" data-id="4"', body)
-        self.assertIn('<a class="open" href="/t/4?p=1">', body)
-        # add-subtask form
-        self.assertIn('name="parent" value="2"', body)
+        self.assertIn('<span class="title edit" data-url="/t/4/rename">Dishes</span>', body)
+        self.assertIn('<a class="arrow" href="/t/4?p=1">', body)
+        self.assertNotIn('<a class="open" href="/t/4', body)
+        # new subtasks go into the description
+        self.assertIn('<form id="add" method="post" action="/t/2/item"', body)
+        self.assertNotIn('name="parent"', body)
         self.assertIn('"home": "/p/1"', body)
 
     def test_detail_of_subtask_links_parent(self):
@@ -315,12 +319,41 @@ class ChecklistTests(ServerTest):
         self.fake.tasks[1]["description"] = "Shopping:\n- [ ] eggs\n- [x] milk\n* [ ] bread"
         _, body, _ = self.req("/t/1?p=1")
         self.assertIn('<div class="ck"><form class="ckf"', body)
-        self.assertIn('<span class="ckt">bread</span>', body)
+        self.assertIn('<span class="ckt edit" data-url="/t/1/item-text" data-i="2">bread</span>', body)
         status, _, headers = self.req("/check", {"id": "1", "i": "2", "done": "1", "back": "/t/1?p=1"})
         self.assertEqual((status, headers["Location"]), (303, "/t/1?p=1"))
         self.assertEqual(self.fake.tasks[1]["description"], "Shopping:\n- [ ] eggs\n- [x] milk\n* [x] bread")
         _, body, _ = self.req("/p/1/list")
         self.assertIn('<span class="cnt">2/3</span>', body)
+
+    def test_rename_task(self):
+        status, _, _ = self.req("/t/1/rename", {"title": "  Buy  oat milk "}, self.ajax)
+        self.assertEqual(status, 204)
+        self.assertEqual(self.fake.tasks[1]["title"], "Buy oat milk")
+        self.assertEqual(self.fake.tasks[1]["description"], "keep me")
+        self.assertEqual(self.req("/t/1/rename", {"title": "  "}, self.ajax)[0], 400)
+
+    def test_rename_without_js_redirects_back(self):
+        status, _, headers = self.req("/t/3/rename", {"title": "Wipe all", "back": "/t/2?p=1"})
+        self.assertEqual((status, headers["Location"]), (303, "/t/2?p=1"))
+        self.assertEqual(self.fake.tasks[3]["title"], "Wipe all")
+
+    def test_edit_html_checklist_text(self):
+        status, _, _ = self.req("/t/2/item-text", {"i": "0", "title": "sink & tap"}, self.ajax)
+        self.assertEqual(status, 204)
+        desc = self.fake.tasks[2]["description"]
+        self.assertIn("<div><p>sink &amp; tap</p></div>", desc)
+        self.assertIn('data-checked="true"', desc)
+
+    def test_add_checklist_item(self):
+        self.req("/t/2/item", {"title": "fridge"}, self.ajax)
+        desc = self.fake.tasks[2]["description"]
+        self.assertEqual(kv.checklist_progress(desc), (1, 2))
+        self.assertLess(desc.index(">sink<"), desc.index(">fridge<"))
+        self.assertLess(desc.index(">fridge<"), desc.index("</ul>"))   # inside the existing list
+        self.req("/t/3/item", {"title": "first"}, self.ajax)               # empty description
+        self.assertEqual(kv.checklist_progress(self.fake.tasks[3]["description"]), (0, 1))
+        self.assertEqual(len(self.fake.tasks), 5)   # no separate subtask tasks were created
 
     def test_missing_item_is_an_error(self):
         status, body, _ = self.req("/check", {"id": "2", "i": "5", "done": "1"}, self.ajax)
@@ -370,6 +403,19 @@ class UnitTests(unittest.TestCase):
         self.assertIsNone(kv.toggle_checklist(html, 2, True))
         self.assertEqual(kv.checklist_progress("1. [X] a\r\n  - [ ] b\nno [ ] item"), (1, 2))
         self.assertEqual(kv.toggle_checklist("1. [X] a\r\n  - [ ] b", 1, True), "1. [X] a\r\n  - [x] b")
+
+    def test_checklist_editing_helpers(self):
+        plain = "Todo:\r\n- [x] a\r\n- [ ] b"
+        self.assertEqual(kv.set_checklist_text(plain, 1, "c"), "Todo:\r\n- [x] a\r\n- [ ] c")
+        self.assertEqual(kv.append_checklist_item(plain, "d"), plain + "\n- [ ] d")
+        self.assertIsNone(kv.set_checklist_text(plain, 2, "x"))
+        nested = ('<ul data-type="taskList"><li data-checked="false"><div><p>a</p>'
+                  '<ul data-type="taskList"><li data-checked="false"><div><p>a1</p></div></li></ul>'
+                  '</div></li></ul><p>notes</p>')
+        added = kv.append_checklist_item(nested, "b")
+        self.assertTrue(added.endswith('<p>b</p></div></li></ul><p>notes</p>'))   # top level, not nested
+        self.assertIn("<p>a1 x</p>", kv.set_checklist_text(nested, 1, "a1 x"))
+        self.assertEqual(kv.append_checklist_item("<p>hi</p>", "x").count('data-type="taskList"'), 1)
 
     def test_null_date(self):
         self.assertIsNone(kv.parse_date("0001-01-01T00:00:00Z"))

@@ -33,8 +33,8 @@ STRINGS = {
     "en": {
         "today": "today", "tomorrow": "tomorrow", "yesterday": "yesterday",
         "weekdays": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-        "new_task": "New task…", "add": "Add", "subtask_of": "Subtask of",
-        "none": "— none —", "empty": "Nothing to do.", "projects": "Projects",
+        "new_task": "New task…", "add": "Add", "save": "Save", "cancel": "Cancel",
+        "empty": "Nothing to do.", "projects": "Projects",
         "refresh": "Refresh", "error": "Error", "offline": "offline", "exit": "Exit",
         "forbidden": "Access key missing or wrong.",
         "pick": "Choose a project",
@@ -44,8 +44,8 @@ STRINGS = {
     "de": {
         "today": "heute", "tomorrow": "morgen", "yesterday": "gestern",
         "weekdays": ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"],
-        "new_task": "Neue Aufgabe…", "add": "Neu", "subtask_of": "Unteraufgabe von",
-        "none": "— keine —", "empty": "Nichts zu tun.", "projects": "Projekte",
+        "new_task": "Neue Aufgabe…", "add": "Neu", "save": "Speichern", "cancel": "Abbrechen",
+        "empty": "Nichts zu tun.", "projects": "Projekte",
         "refresh": "Aktualisieren", "error": "Fehler", "offline": "offline", "exit": "Beenden",
         "forbidden": "Zugangsschlüssel fehlt oder ist falsch.",
         "pick": "Projekt wählen",
@@ -166,22 +166,39 @@ class Vikunja:
     def task(self, task_id):
         return self.request("GET", f"/tasks/{task_id}")[0]
 
-    def set_check(self, task_id, index, done):
-        """Tick/untick the index-th checklist item ("- [ ]") of a task's description."""
+    def _update(self, task_id, change):
+        # Vikunja's update overwrites every field, so always send back the full task.
         task = self.request("GET", f"/tasks/{task_id}")[0]
-        desc = task.get("description") or ""
-        new = toggle_checklist(desc, index, done)
-        if new is None:
-            raise VikunjaError("Checklist item not found (description changed?), reload the page", 409)
-        if new != desc:
-            task["description"] = new
+        if change(task) is not False:
             self.request("POST", f"/tasks/{task_id}", body=task)
 
+    def _change_description(self, task_id, change):
+        def apply(task):
+            desc = task.get("description") or ""
+            new = change(desc)
+            if new is None:
+                raise VikunjaError("Checklist item not found (description changed?), reload the page", 409)
+            if new == desc:
+                return False
+            task["description"] = new
+        self._update(task_id, apply)
+
+    def set_check(self, task_id, index, done):
+        """Tick/untick the index-th checklist item ("- [ ]") of a task's description."""
+        self._change_description(task_id, lambda d: toggle_checklist(d, index, done))
+
+    def set_check_text(self, task_id, index, text):
+        self._change_description(task_id, lambda d: set_checklist_text(d, index, text))
+
+    def add_check(self, task_id, text):
+        """Add a "- [ ] text" checklist item (Vikunja-style subtask in the description)."""
+        self._change_description(task_id, lambda d: append_checklist_item(d, text))
+
+    def rename(self, task_id, title):
+        self._update(task_id, lambda task: task.__setitem__("title", title))
+
     def set_done(self, task_id, done):
-        # Vikunja's update overwrites every field, so send back the full task.
-        task = self.request("GET", f"/tasks/{task_id}")[0]
-        task["done"] = bool(done)
-        return self.request("POST", f"/tasks/{task_id}", body=task)[0]
+        self._update(task_id, lambda task: task.__setitem__("done", bool(done)))
 
     def create_task(self, project_id, title, parent_id=None):
         task = self.request("PUT", f"/projects/{project_id}/tasks",
@@ -303,6 +320,7 @@ class _Sanitizer(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.out, self.stack, self.skip = [], [], 0
         self.check_form, self.check_index = check_form, 0
+        self.edit_pending = None  # index of the checklist item whose first <p> is its text
 
     def handle_starttag(self, tag, attrs):
         if tag in self.SKIP:
@@ -325,8 +343,15 @@ class _Sanitizer(HTMLParser):
         if out == "li" and attrs.get("data-checked") in ("true", "false"):  # tiptap checklist item
             on = attrs["data-checked"] == "true"
             self.out.append(f'<li class="ck{" on" if on else ""}">' + _check_box(self.check_form, self.check_index, on))
+            self.edit_pending = self.check_index if self.check_form else None
             self.check_index += 1
+        elif out == "p" and self.edit_pending is not None:
+            url = f"/t/{self.check_form[0]}/item-text"
+            self.out.append(f'<p class="edit"{_edit_attrs(url, self.edit_pending)}>')
+            self.edit_pending = None
         else:
+            if out == "li":
+                self.edit_pending = None
             self.out.append(f"<{out}>")
         self.stack.append((tag, out))
 
@@ -406,6 +431,69 @@ def toggle_checklist(value, index, done):
     return head + seg + tail
 
 
+def _check_item_segment(value, index):
+    """For the index-th tiptap checklist item: (offset after its <li ...>, its own markup up to
+    the next item). None if there is no such item."""
+    matches = list(CHECK_HTML.finditer(value))
+    if index >= len(matches):
+        return None
+    start = value.index(">", matches[index].end()) + 1
+    nxt = re.search(r"<li\b|</li>", value[start:], re.I)
+    return start, value[start:start + nxt.start()] if nxt else value[start:]
+
+
+def set_checklist_text(value, index, text):
+    """Description with the index-th checklist item's text replaced (None if not found)."""
+    if not _is_html(value):
+        lines, n = value.split("\n"), 0
+        for i, line in enumerate(lines):
+            m = CHECK_LINE.match(line)
+            if m:
+                if n == index:
+                    cr = "\r" if line.endswith("\r") else ""
+                    lines[i] = f"{m.group(1)}{m.group(2)}] {text}{cr}"
+                    return "\n".join(lines)
+                n += 1
+        return None
+    found = _check_item_segment(value, index)
+    if not found:
+        return None
+    start, seg = found
+    p = re.search(r"(<p\b[^>]*>)(.*?)(</p>)", seg, re.S | re.I)
+    if not p:
+        return None
+    seg_new = seg[:p.start(2)] + html.escape(text, quote=False) + seg[p.end(2):]
+    return value[:start] + seg_new + value[start + len(seg):]
+
+
+def append_checklist_item(value, text):
+    """Description with a new unticked checklist item at the end of its (last) checklist."""
+    value = value or ""
+    if value.strip() and not _is_html(value):  # plain markdown description
+        return value.rstrip("\r\n") + "\n- [ ] " + text
+    item = ('<li data-checked="false" data-type="taskItem"><label><input type="checkbox"><span></span>'
+            f'</label><div><p>{html.escape(text, quote=False)}</p></div></li>')
+    # find the end of the last top-level checklist (not a nested one)
+    depth, top_is_checklist, last_close = 0, False, None
+    for m in re.finditer(r"<(/?)ul\b([^>]*)>", value, re.I):
+        if m.group(1):
+            depth = max(0, depth - 1)
+            if depth == 0 and top_is_checklist:
+                last_close = m.start()
+        else:
+            if depth == 0:
+                top_is_checklist = 'data-type="tasklist"' in m.group(2).lower()
+            depth += 1
+    if last_close is not None:
+        return value[:last_close] + item + value[last_close:]
+    return value + f'<ul data-type="taskList">{item}</ul>'
+
+
+def _edit_attrs(url, index=None):
+    """Marks text as editable in place (see startEdit in the page JS)."""
+    return f' data-url="{esc(url)}"' + (f' data-i="{index}"' if index is not None else "")
+
+
 def _check_box(form, index, on):
     """Tick box for a checklist item: a form when tickable (detail page), else just a box."""
     if not form:
@@ -439,8 +527,9 @@ def description_html(value, check_form=None):
             m = CHECK_LINE.match(line)
             if m:
                 on = m.group(2) != " "
+                edit = (' edit"' + _edit_attrs(f"/t/{check_form[0]}/item-text", n)) if check_form else '"'
                 out.append(f'<div class="ck{" on" if on else ""}">{_check_box(check_form, n, on)}'
-                           f'<span class="ckt">{esc(m.group(3)[1:].strip())}</span></div>')
+                           f'<span class="ckt{edit}>{esc(m.group(3)[1:].strip())}</span></div>')
                 n += 1
             else:
                 out.append(esc(line) + "<br>")
@@ -474,8 +563,6 @@ a{color:#000}
 #add .go{display:table-cell;padding-left:8px;vertical-align:middle}
 #add input[type=text]{width:100%;font:inherit;padding:10px;border:3px solid #000;border-radius:0;-webkit-appearance:none;background:#fff;color:#000}
 #add button{font:inherit;font-weight:bold;padding:10px 18px;border:3px solid #000;background:#000;color:#fff;border-radius:0;-webkit-appearance:none}
-#add .par{font-size:.7em;margin-top:6px}
-#add select{font-size:1em;max-width:75%}
 ul{list-style:none;margin:0;padding:0}
 .row{display:table;width:100%;border-bottom:1px solid #000}
 .row form{display:table-cell;width:1%;vertical-align:middle;padding:8px 10px 8px 0;margin:0}
@@ -518,6 +605,11 @@ h2.sec{font-size:.75em;margin:18px 0 4px;padding-bottom:2px;border-bottom:3px so
 .box{position:relative;display:inline-block;width:.9em;height:.9em;margin-right:.4em;border:2px solid #000;vertical-align:-.1em}
 .ck.on>.box .mark,.ck.on>.ckf .mark{display:block}
 .ckf{display:inline;margin:0}
+.edit{border-bottom:2px dotted #000}
+.ren{display:block;margin:4px 0}
+.ren input{width:100%;font:inherit;padding:6px;border:3px solid #000;border-radius:0;-webkit-appearance:none;background:#fff;color:#000}
+.ren button{font-size:.8em;margin:6px 8px 0 0;padding:8px 14px;border:3px solid #000;border-radius:0;background:#000;color:#fff;-webkit-appearance:none}
+.ren button.cancel{background:#fff;color:#000}
 .ckf .box{width:1.5em;height:1.5em;margin:0 .5em 0 0;padding:0;border:3px solid #000;border-radius:0;background:#fff;-webkit-appearance:none;vertical-align:middle}
 .desc pre{white-space:pre-wrap;border:1px solid #000;padding:4px}
 .desc blockquote{margin:0 0 .5em;padding-left:8px;border-left:4px solid #000}
@@ -571,24 +663,6 @@ JS = r"""
     return CFG.error + " " + r.status + (r.responseText ? ": " + r.responseText.substring(0, 200) : "");
   }
 
-  function rebuildParents() {
-    var sel = $("parent");
-    if (!sel || sel.tagName !== "SELECT" || !$("list")) return;
-    var keep = sel.value, lis = $("list").getElementsByTagName("li");
-    while (sel.options.length > 1) sel.remove(1);
-    for (var i = 0; i < lis.length; i++) {
-      var li = lis[i];
-      if (!li.getAttribute("data-id") || hasCls(li, "done")) continue;
-      var o = document.createElement("option"), pre = "";
-      for (var d = 0; d < +li.getAttribute("data-depth"); d++) pre += "– ";
-      o.value = li.getAttribute("data-id");
-      o.text = pre + li.getAttribute("data-title");
-      sel.appendChild(o);
-    }
-    sel.value = keep;
-    if (sel.value !== keep) sel.value = "";
-  }
-
   function refresh() {
     if (busy || !CFG.list) return;
     busy = true;
@@ -600,7 +674,6 @@ JS = r"""
       if (r.responseText !== current) {
         $("list").innerHTML = r.responseText;
         current = r.responseText;
-        rebuildParents();
         updatePager();
       }
       $("upd").textContent = r.getResponseHeader("X-Updated") || "";
@@ -621,13 +694,52 @@ JS = r"""
     });
   }
 
-  // Tapping a checklist item's text ticks it too (bigger target than the box).
+  // Edit in place: tapping text marked "edit" (detail page) swaps in a small form.
+  var editing = null;
+  function startEdit(el) {
+    if (editing) return;
+    var f = document.createElement("form"), inp = document.createElement("input");
+    var save = document.createElement("button"), cancel = document.createElement("button");
+    f.className = "ren";
+    inp.type = "text"; inp.name = "title"; inp.setAttribute("autocomplete", "off");
+    inp.value = el.textContent.replace(/^\s+|\s+$/g, "");
+    save.type = "submit"; save.textContent = CFG.save;
+    cancel.type = "button"; cancel.className = "cancel"; cancel.textContent = CFG.cancel;
+    f.appendChild(inp); f.appendChild(save); f.appendChild(cancel);
+    editing = { el: el, html: el.innerHTML, text: inp.value };
+    el.innerHTML = "";
+    el.appendChild(f);
+    inp.focus();
+  }
+  function stopEdit(text) {
+    if (!editing) return;
+    if (text === null) editing.el.innerHTML = editing.html;
+    else editing.el.textContent = text;
+    editing = null;
+  }
+  function saveEdit(f) {
+    var value = f.elements["title"].value.replace(/\s+/g, " ").replace(/^ | $/g, "");
+    if (!value || value === editing.text) { stopEdit(null); return; }
+    var el = editing.el, i = el.getAttribute("data-i");
+    var body = "title=" + encodeURIComponent(value) + (i !== null ? "&i=" + encodeURIComponent(i) : "");
+    status("\u2026");
+    xhr("POST", el.getAttribute("data-url"), body, function (ok, r) {
+      if (!ok) { status(errText(r), true); return; }
+      status("");
+      stopEdit(value);
+      if (hasCls(el, "title") && closest(el, "head")) document.title = value;
+    });
+  }
+
   document.addEventListener("click", function (ev) {
     var el = ev.target;
-    if (closest(el, "ckf")) return;                      // the box: handled as submit
-    for (var a = el; a && a !== document; a = a.parentNode) if (a.tagName === "A") return;
-    var ck = closest(el, "ck"), f = ck && ck.getElementsByTagName("form")[0];
-    if (f && hasCls(f, "ckf")) { ev.preventDefault(); touch(); toggleVia(f, ck, "on"); }
+    if (closest(el, "ren")) {
+      if (hasCls(el, "cancel")) { ev.preventDefault(); stopEdit(null); }
+      return;
+    }
+    if (closest(el, "ckf")) return;                      // tick box: handled as submit
+    var ed = closest(el, "edit");
+    if (ed) { ev.preventDefault(); touch(); startEdit(ed); }
   }, false);
 
   document.addEventListener("submit", function (ev) {
@@ -639,6 +751,9 @@ JS = r"""
     } else if (hasCls(f, "ckf")) {
       ev.preventDefault();
       toggleVia(f, closest(f, "ck"), "on");
+    } else if (hasCls(f, "ren")) {
+      ev.preventDefault();
+      saveEdit(f);
     } else if (f.id === "add") {
       ev.preventDefault();
       var title = f.elements["title"];
@@ -649,7 +764,6 @@ JS = r"""
         title.value = "";
         title.blur();
         if (!CFG.list) { location.reload(); return; }
-        f.elements["parent"].value = "";
         lastAct = 0;
         refresh();
       });
@@ -702,7 +816,6 @@ JS = r"""
   updatePager();
 
   current = $("list") ? $("list").innerHTML : null;
-  rebuildParents();
 })();
 """
 
@@ -778,16 +891,17 @@ class Renderer:
         """One task row (plus nested subtasks when ctx["nest"]). Tapping the text opens details."""
         tid, done = t["id"], bool(t.get("done"))
         ctx["seen"].add(tid)
-        if not done:
-            ctx["parents"].append((tid, depth, t.get("title") or ""))
         href = f"/t/{tid}?p={ctx['pid']}"
+        if ctx.get("edit"):  # detail page: tap the text to rename, the arrow opens the subtask
+            body = (f'<div class="body"><span class="title edit"{_edit_attrs(f"/t/{tid}/rename")}>'
+                    f'{esc(t.get("title"))}</span>{self._meta(t, kids, ctx["now"])}</div>')
+        else:
+            body = (f'<div class="body link"><a class="open" href="{href}">'
+                    f'<span class="title">{esc(t.get("title"))}</span>'
+                    f'{self._meta(t, kids, ctx["now"])}</a></div>')
         out = [
-            f'<li class="task{" done" if done else ""}" data-id="{tid}" data-depth="{depth}"'
-            f' data-title="{esc(t.get("title"))}"><div class="row">'
-            f'{self._toggle_form(t, ctx["back"])}'
-            f'<div class="body link"><a class="open" href="{href}">'
-            f'<span class="title">{esc(t.get("title"))}</span>'
-            f'{self._meta(t, kids, ctx["now"])}</a></div>'
+            f'<li class="task{" done" if done else ""}" data-id="{tid}"><div class="row">'
+            f'{self._toggle_form(t, ctx["back"])}{body}'
             f'<a class="arrow" href="{href}"><span class="chev"></span></a></div>'
         ]
         sub = []
@@ -808,16 +922,17 @@ class Renderer:
     def _script(self, **cfg):
         pager = ('<div id="pager" style="display:none"><a id="pgup" href="#"><span class="tri up"></span></a>'
                  '<a id="pgdn" href="#"><span class="tri dn"></span></a></div>')
-        cfg.update(refresh=self.cfg.refresh, reloadHours=6, error=self.t["error"], offline=self.t["offline"])
+        cfg.update(refresh=self.cfg.refresh, reloadHours=6, error=self.t["error"], offline=self.t["offline"],
+                   save=self.t["save"], cancel=self.t["cancel"])
         return pager + "<script>" + JS.replace("%%CFG%%", json.dumps(cfg)) + "</script>"
 
     # -- pages -------------------------------------------------------------
 
     def task_list(self, project_id, tasks, now=None):
-        """The refreshable part of the page. Returns (html, parent_choices)."""
+        """The refreshable part of the page."""
         roots, kids = build_tree(tasks, self.cfg.sort)
         ctx = {"back": f"/p/{project_id}", "pid": project_id, "now": now or dt.datetime.now().astimezone(),
-               "seen": set(), "parents": [], "nest": self.cfg.list_subtasks}
+               "seen": set(), "nest": self.cfg.list_subtasks}
         items = []
         for t in roots:
             if t["id"] not in ctx["seen"]:
@@ -827,15 +942,11 @@ class Renderer:
                 if t.get("id") is not None and t["id"] not in ctx["seen"] and not t.get("done"):
                     items.append(self._node(t, kids, ctx))
         if not items:
-            return f'<p class="empty">{esc(self.t["empty"])}</p>', ctx["parents"]
-        return '<ul id="tasks">' + "".join(items) + "</ul>", ctx["parents"]
+            return f'<p class="empty">{esc(self.t["empty"])}</p>'
+        return '<ul id="tasks">' + "".join(items) + "</ul>"
 
-    def task_page(self, project_id, title, list_html, parents, error=None):
+    def task_page(self, project_id, title, list_html, error=None):
         t = self.t
-        options = "".join(
-            f'<option value="{pid}">{"– " * depth}{esc(ptitle)}</option>'
-            for pid, depth, ptitle in parents
-        )
         banner = f'<div class="banner">{esc(error)}</div>' if error else ""
         body = (
             f'<div id="hd"><h1>{esc(title)}</h1><div class="nav">'
@@ -845,9 +956,7 @@ class Renderer:
             f'{banner}<form id="add" method="post" action="/p/{project_id}/add">'
             '<div class="line"><div class="in">'
             f'<input type="text" id="title" name="title" autocomplete="off" placeholder="{esc(t["new_task"])}">'
-            f'</div><div class="go"><button type="submit">{esc(t["add"])}</button></div></div>'
-            f'<div class="par">{esc(t["subtask_of"])}: <select id="parent" name="parent">'
-            f'<option value="">{esc(t["none"])}</option>{options}</select></div></form>'
+            f'</div><div class="go"><button type="submit">{esc(t["add"])}</button></div></div></form>'
             f'<div id="status"></div><div id="list">{list_html}</div>'
         )
         return self.layout(title, body, self._script(list=f"/p/{project_id}/list", home=None))
@@ -860,7 +969,7 @@ class Renderer:
         key = sort_key(self.cfg.sort)
         subs = sorted((s for s in _rel(task, "subtask") if "id" in s),
                       key=lambda s: (bool(s.get("done")), key(s)))
-        ctx = {"back": here, "pid": project_id, "now": now, "seen": {tid}, "parents": [], "nest": False}
+        ctx = {"back": here, "pid": project_id, "now": now, "seen": {tid}, "nest": False, "edit": True}
         rows = "".join(self._node(s, {}, ctx) for s in subs)
         parents = " ".join(f'<a href="/t/{p["id"]}?p={project_id}">{esc(p.get("title"))}</a>'
                            for p in _rel(task, "parenttask") if "id" in p)
@@ -871,13 +980,14 @@ class Renderer:
             f'<div id="status"></div>'
             + (f'<div class="parent">{esc(t["parent"])}: {parents}</div>' if parents else "")
             + f'<div class="task head{" done" if task.get("done") else ""}"><div class="row">'
-            f'{self._toggle_form(task, here)}<div class="body"><span class="title">{esc(task.get("title"))}</span>'
+            f'{self._toggle_form(task, here)}<div class="body">'
+            f'<span class="title edit"{_edit_attrs(f"/t/{tid}/rename")}>{esc(task.get("title"))}</span>'
             f'{self._meta(task, {tid: subs}, now)}</div></div></div>'
             + (f'<div class="desc">{desc}</div>' if desc else "")
-            + f'<h2 class="sec">{esc(t["subtasks"])}</h2>'
-            + (f'<ul>{rows}</ul>' if rows else "")
-            + f'<form id="add" method="post" action="/p/{task.get("project_id") or project_id}/add" style="margin-top:10px">'
-            f'<input type="hidden" id="parent" name="parent" value="{tid}">'
+            + (f'<h2 class="sec">{esc(t["subtasks"])}</h2><ul>{rows}</ul>' if rows else "")
+            # new subtasks become "- [ ]" checklist items in the description, like in Vikunja's editor
+            + f'<form id="add" method="post" action="/t/{tid}/item" style="margin-top:14px">'
+            f'<input type="hidden" name="back" value="{esc(here)}">'
             '<div class="line"><div class="in">'
             f'<input type="text" id="title" name="title" autocomplete="off" placeholder="{esc(t["new_subtask"])}">'
             f'</div><div class="go"><button type="submit">{esc(t["add"])}</button></div></div></form>'
@@ -1005,11 +1115,14 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and m and m.group(2) is None:
             return self._task_page(m.group(1))
         if method == "GET" and m and m.group(2) == "/list":
-            html_, _ = self.render.task_list(m.group(1), self.api.open_tasks(m.group(1)))
+            html_ = self.render.task_list(m.group(1), self.api.open_tasks(m.group(1)))
             return self._send(200, html_, headers={"X-Updated": dt.datetime.now().strftime("%H:%M")})
         m_task = re.fullmatch(r"/t/(\d+)", path)
         if method == "GET" and m_task:
             return self._detail_page(int(m_task.group(1)))
+        m_edit = re.fullmatch(r"/t/(\d+)/(rename|item|item-text)", path)
+        if method == "POST" and m_edit:
+            return self._edit(int(m_edit.group(1)), m_edit.group(2))
         if method == "POST" and m and m.group(2) == "/add":
             return self._add(m.group(1))
         if method == "POST" and path == "/check":
@@ -1022,8 +1135,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _task_page(self, project_id):
         project = self.api.project(project_id)
-        list_html, parents = self.render.task_list(project_id, self.api.open_tasks(project_id))
-        self._send(200, self.render.task_page(project_id, project.get("title") or "", list_html, parents))
+        list_html = self.render.task_list(project_id, self.api.open_tasks(project_id))
+        self._send(200, self.render.task_page(project_id, project.get("title") or "", list_html))
 
     def _detail_page(self, task_id):
         task = self.api.task(task_id)
@@ -1043,6 +1156,25 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._send(400, "bad task id or item", "text/plain")
         self.api.set_check(task_id, index, form.get("done") == "1")
+        self._done_redirect(form)
+
+    def _edit(self, task_id, what):
+        form = self._form()
+        text = " ".join(form.get("title", "").split())[:250]
+        if not text:
+            return self._send(400, "empty text", "text/plain")
+        if what == "rename":
+            self.api.rename(task_id, text)
+        elif what == "item":
+            self.api.add_check(task_id, text)
+        else:
+            try:
+                index = int(form.get("i", ""))
+            except ValueError:
+                return self._send(400, "bad item", "text/plain")
+            self.api.set_check_text(task_id, index, text)
+        if not form.get("back"):
+            form["back"] = f"/t/{task_id}"
         self._done_redirect(form)
 
     def _done_redirect(self, form):
