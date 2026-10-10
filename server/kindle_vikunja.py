@@ -103,6 +103,10 @@ class Config:
         self.sort = env.get("SORT", "position").strip().lower()
         self.font_size = int(env.get("FONT_SIZE", "24"))
         self.dash_font_size = int(env.get("DASHBOARD_FONT_SIZE", "28"))
+        # The Kindle has no emoji font: "image" (Twemoji pictures via this server) | "strip" | "keep"
+        self.emoji = env.get("EMOJI", "image").strip().lower()
+        self.emoji_url = env.get("EMOJI_URL", "").strip() or (
+            "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/{code}.png")
         self.lang = env.get("UI_LANG", "en").strip().lower()
         self.list_subtasks = env.get("LIST_SUBTASKS", "0").lower() not in ("0", "false", "no")
         self.home_after = int(env.get("DETAIL_RETURN_SECONDS", "300"))
@@ -372,6 +376,70 @@ def parse_icon_map(dart_source):
               re.findall(r"static const IconData (\w+)\s*=\s*IconData\(\s*(0x[0-9a-fA-F]+|\d+)", dart_source)}
     return {key: consts[ident] for key, ident in re.findall(r'"([^"]+)"\s*:\s*(\w+)\s*,', dart_source)
             if ident in consts}
+
+
+_EMOJI_BMP_DEFAULT = ("\u231A\u231B\u23E9-\u23EC\u23F0\u23F3\u25FD\u25FE\u2614\u2615\u2648-\u2653\u267F"
+                      "\u2693\u26A1\u26AA\u26AB\u26BD\u26BE\u26C4\u26C5\u26CE\u26D4\u26EA\u26F2\u26F3"
+                      "\u26F5\u26FA\u26FD\u2705\u270A\u270B\u2728\u274C\u274E\u2753-\u2755\u2757"
+                      "\u2795-\u2797\u27B0\u27BF\u2B1B\u2B1C\u2B50\u2B55")
+# symbols that are only emoji when followed by the emoji variation selector (U+FE0F)
+_EMOJI_BMP_VS16 = ("\u00A9\u00AE\u203C\u2049\u2122\u2139\u2194-\u21AA\u2300-\u23FF\u24C2\u25AA-\u25FE"
+                   "\u2600-\u27BF\u2934\u2935\u2B00-\u2BFF\u3030\u303D\u3297\u3299")
+_EMOJI_BASE = (f"(?:[\U0001F000-\U0001FAFF]|[{_EMOJI_BMP_DEFAULT}]\uFE0F?|[{_EMOJI_BMP_VS16}]\uFE0F)"
+               "\uFE0F?[\U0001F3FB-\U0001F3FF]?")
+EMOJI_RE = re.compile(f"[\U0001F1E6-\U0001F1FF]{{2}}|{_EMOJI_BASE}(?:\u200D{_EMOJI_BASE})*")
+_TAG_RE = re.compile(r"(<script\b.*?</script>|<style\b.*?</style>|<title>.*?</title>|<[^>]*>)", re.S | re.I)
+# 1x1 transparent GIF: shown instead of a broken image when an emoji can't be fetched
+BLANK_GIF = (b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00!\xf9\x04\x01\x00\x00\x00"
+             b"\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;")
+
+
+def twemoji_code(seq):
+    """Twemoji file name for an emoji sequence (U+FE0F is dropped unless it is a ZWJ sequence)."""
+    cps = [ord(c) for c in seq]
+    if 0x200D not in cps:
+        cps = [c for c in cps if c != 0xFE0F]
+    return "-".join(f"{c:x}" for c in cps)
+
+
+def emojify(page, mode):
+    """Replace emoji in the text of an HTML page (not in tags, scripts or attributes)."""
+    if mode not in ("image", "strip"):
+        return page
+
+    def text(segment):
+        if mode == "strip":  # also drop the space after a leading emoji ("🛒 Daily" -> "Daily")
+            return re.sub(f"(?:{EMOJI_RE.pattern}) ?", "", segment)
+        return EMOJI_RE.sub(lambda m: f'<img class="emo" src="/emoji/{twemoji_code(m.group(0))}.png" '
+                                      f'alt="{m.group(0)}">', segment)
+
+    parts = _TAG_RE.split(page)
+    return "".join(part if i % 2 else text(part) for i, part in enumerate(parts))
+
+
+class EmojiCache:
+    """Twemoji PNGs fetched on demand and kept in memory (failures retried after 30 min)."""
+
+    def __init__(self, cfg, limit=1000):
+        self.cfg, self.limit, self.images = cfg, limit, {}
+        self._lock = threading.Lock()
+
+    def get(self, code):
+        hit = self.images.get(code)
+        if hit is not None and (hit[0] is not None or time.time() - hit[1] < 1800):
+            return hit[0]
+        try:
+            req = urllib.request.Request(self.cfg.emoji_url.format(code=code), headers={"User-Agent": "kindle-vikunja"})
+            with urllib.request.urlopen(req, timeout=self.cfg.timeout) as resp:
+                data = resp.read()
+        except Exception as e:  # noqa: BLE001 - emoji are decoration only
+            sys.stderr.write(f"emoji {code} unavailable: {e}\n")
+            data = None
+        with self._lock:
+            if len(self.images) >= self.limit:
+                self.images.clear()
+            self.images[code] = (data, time.time())
+        return data
 
 
 class IconFont:
@@ -815,6 +883,8 @@ ul{list-style:none;margin:0;padding:0}
 .parent{font-size:.75em;margin:0 0 6px}
 .parent a{display:inline-block;padding:6px 0}
 h2.sec{font-size:.75em;margin:18px 0 4px;padding-bottom:2px;border-bottom:3px solid #000}
+h2.cat{font-size:1.05em;margin:22px 0 4px}
+.emo{width:1.1em;height:1.1em;margin:0 .1em;vertical-align:-.15em;border:0}
 .desc{word-wrap:break-word}
 .desc p,.desc div{margin:0 0 .5em}
 .desc ul,.desc ol{margin:0 0 .5em;padding-left:1.4em}
@@ -926,7 +996,7 @@ JS = r"""
     f.className = "ren";
     inp.type = "text"; inp.name = "title"; inp.setAttribute("autocomplete", "off");
     // data-empty: placeholder shown for empty text (which may then be saved empty)
-    var ph = el.getAttribute("data-empty"), cur = el.textContent.replace(/^\s+|\s+$/g, "");
+    var ph = el.getAttribute("data-empty"), cur = textOf(el).replace(/^\s+|\s+$/g, "");
     inp.value = cur === ph ? "" : cur;
     save.type = "submit"; save.textContent = CFG.save;
     cancel.type = "button"; cancel.className = "cancel"; cancel.textContent = CFG.cancel;
@@ -935,6 +1005,16 @@ JS = r"""
     el.innerHTML = "";
     el.appendChild(f);
     inp.focus();
+  }
+  // Text of an element with emoji pictures turned back into the emoji (their alt text).
+  function textOf(el) {
+    var out = "", n;
+    for (n = el.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType === 3) out += n.nodeValue;
+      else if (n.tagName === "IMG") out += n.getAttribute("alt") || "";
+      else if (n.nodeType === 1) out += textOf(n);
+    }
+    return out;
   }
   function stopEdit(text) {
     if (!editing) return;
@@ -1375,7 +1455,7 @@ class Renderer:
         for key in sorted(groups, key=lambda k: k[:3]):
             name, group = groups[key]
             if with_headers:
-                out.append(f'<h2 class="sec">{esc(name)}</h2>')
+                out.append(f'<h2 class="sec cat">{esc(name)}</h2>')
             out.append("<ul>" + "".join(self._shop_row(lid, i, False)
                                         for i in sorted(group, key=_shop_item_key)) + "</ul>")
         if not items:
@@ -1383,7 +1463,7 @@ class Renderer:
         on_list = {i.get("id") for i in items}
         recent = [i for i in lst.get("recentItems") or [] if i.get("id") not in on_list]
         if recent:
-            out.append(f'<h2 class="sec">{esc(t["recent"])}</h2><ul>'
+            out.append(f'<h2 class="sec cat">{esc(t["recent"])}</h2><ul>'
                        + "".join(self._shop_row(lid, i, True) for i in recent) + "</ul>")
         return "".join(out)
 
@@ -1438,6 +1518,7 @@ class Handler(BaseHTTPRequestHandler):
     cfg = None
     api = None  # Vikunja (None if not configured)
     ko = None   # KitchenOwl (None if not configured)
+    emoji = None  # EmojiCache
     render = None
 
     def log_message(self, fmt, *args):
@@ -1452,6 +1533,8 @@ class Handler(BaseHTTPRequestHandler):
     # -- plumbing ----------------------------------------------------------
 
     def _send(self, status, body, ctype="text/html; charset=utf-8", headers=None, cache="no-store"):
+        if isinstance(body, str) and ctype.startswith("text/html"):
+            body = emojify(body, self.cfg.emoji)
         data = body.encode("utf-8") if isinstance(body, str) else body
         self.send_response(status)
         self.send_header("Content-Type", ctype)
@@ -1521,6 +1604,12 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/dash/list":
             return self._send(200, self._tiles(), headers={
                 "X-Updated": dt.datetime.now().strftime("%H:%M"), "X-Today": self.render.today()})
+        m_emoji = re.fullmatch(r"/emoji/([0-9a-f]{2,8}(?:-[0-9a-f]{2,8}){0,9})\.png", path)
+        if m_emoji:
+            img = self.emoji.get(m_emoji.group(1))
+            if img is None:  # invisible instead of a broken-image symbol; retried later
+                return self._send(200, BLANK_GIF, "image/gif", cache="max-age=600")
+            return self._send(200, img, "image/png", cache="max-age=2592000")
         if path == "/ko/items.ttf":
             icons = self.render.icons
             if not icons or not icons.mapping():
@@ -1704,7 +1793,8 @@ def make_server(cfg):
     handler = type("BoundHandler", (Handler,), {
         "cfg": cfg, "render": Renderer(cfg, IconFont(cfg) if cfg.kitchenowl and cfg.ko_icons else None),
         "api": Vikunja(cfg) if cfg.vikunja else None,
-        "ko": KitchenOwl(cfg) if cfg.kitchenowl else None})
+        "ko": KitchenOwl(cfg) if cfg.kitchenowl else None,
+        "emoji": EmojiCache(cfg)})
     return ThreadingHTTPServer((cfg.host, cfg.port), handler)
 
 

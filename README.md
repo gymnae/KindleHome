@@ -87,6 +87,12 @@ icons. If no icons appear, the server log says why. Usually the fix is to
 point `KITCHENOWL_ICON_MAP_URL` at the file for your KitchenOwl version. Set
 `KITCHENOWL_ICONS=0` to turn them off.
 
+**Emoji** (e.g. in list or category names) can't be shown by the Kindle's
+fonts. The server replaces them with small pictures from
+[Twemoji](https://github.com/jdecked/twemoji) (graphics © Twitter/X and
+contributors, CC-BY 4.0). It fetches them from a CDN when first needed and
+caches them in memory. `EMOJI=strip` removes emoji instead.
+
 ## 2. Run the server
 
 ```sh

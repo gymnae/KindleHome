@@ -171,6 +171,7 @@ class FakeKitchenOwl:
         self.requests = []
         self.down = False
         self.font = make_ttf([256, 257, 258])
+        self.list_name = "Groceries"
 
     def item(self, iid, description=""):
         return dict(self.catalog[iid], description=description)
@@ -199,6 +200,8 @@ class FakeKitchenOwl:
                     return self.reply(200, fake.font, "font/ttf")
                 if u.path == "/src/item_icons.dart":
                     return self.reply(200, ICON_DART.encode(), "text/plain")
+                if u.path == "/emoji/1f6cd.png":
+                    return self.reply(200, b"\x89PNG fake", "image/png")
                 if self.headers.get("Authorization") != "Bearer ko-secret":
                     return self.reply(401, {"msg": "Unauthorized"})
                 body = self.body()
@@ -209,7 +212,7 @@ class FakeKitchenOwl:
                     items = [fake.item(i, d) for i, d in fake.on_list.items()]
                     recent = [fake.item(i) for i in fake.recent]
                     return self.reply(200, [{"id": 9, "name": "Hardware", "items": [], "recentItems": []},
-                                            {"id": 7, "name": "Groceries", "items": items, "recentItems": recent}])
+                                            {"id": 7, "name": fake.list_name, "items": items, "recentItems": recent}])
                 if method == "GET" and u.path == "/api/household/4/item/search":
                     q = urllib.parse.parse_qs(u.query)["query"][0]
                     name, _, desc = q.partition(" ")
@@ -275,7 +278,8 @@ class ServerTest(unittest.TestCase):
             self.servers.append(ko)
             env.update({"KITCHENOWL_URL": f"http://127.0.0.1:{ko.server_port}", "KITCHENOWL_TOKEN": "ko-secret",
                         "KITCHENOWL_LIST_ID": "7",
-                        "KITCHENOWL_ICON_MAP_URL": f"http://127.0.0.1:{ko.server_port}/src/item_icons.dart"})
+                        "KITCHENOWL_ICON_MAP_URL": f"http://127.0.0.1:{ko.server_port}/src/item_icons.dart",
+                        "EMOJI_URL": f"http://127.0.0.1:{ko.server_port}/emoji/{{code}}.png"})
         env.update(self.extra_env)
         self.app = serve(kv.make_server(kv.Config(env)))
         self.servers.append(self.app)
@@ -529,7 +533,7 @@ class DashboardTests(ServerTest):
         self.assertEqual(status, 200)
         self.assertIn("<h1>Groceries</h1>", body)
         # grouped by category order, uncategorized last
-        fruit, dairy, other = (body.index(f'<h2 class="sec">{n}</h2>') for n in ("Fruit", "Dairy", "Other"))
+        fruit, dairy, other = (body.index(f'<h2 class="sec cat">{n}</h2>') for n in ("Fruit", "Dairy", "Other"))
         self.assertLess(fruit, dairy)
         self.assertLess(dairy, other)
         self.assertIn('<span class="note edit" data-empty="+" data-url="/s/7/item/1/desc">2 l</span>', body)
@@ -611,7 +615,32 @@ class KitchenOwlExtrasTests(ServerTest):
         self.assertIn("Rice", [it["name"] for it in self.ko.catalog.values()])
 
 
+class EmojiTests(ServerTest):
+    kitchenowl = True
+
+    def test_emoji_become_pictures(self):
+        self.ko.list_name = "\U0001F6CD\ufe0f Daily"
+        _, body, _ = self.req("/s/7")
+        img = '<img class="emo" src="/emoji/1f6cd.png" alt="\U0001F6CD\ufe0f">'
+        self.assertIn(f"<h1>{img} Daily</h1>", body)
+        self.assertIn("<title>\U0001F6CD\ufe0f Daily</title>", body)   # not inside <title>
+        self.assertIn(img, self.req("/")[1])                          # dashboard tile
+        status, png, headers = self.req("/emoji/1f6cd.png")
+        self.assertEqual((status, headers["Content-Type"]), (200, "image/png"))
+        status, _, headers = self.req("/emoji/1f34e.png")              # not available: invisible gif
+        self.assertEqual((status, headers["Content-Type"]), (200, "image/gif"))
+        self.assertEqual(self.req("/emoji/..%2fetc.png")[0], 404)
+
+
 class IconUnitTests(unittest.TestCase):
+    def test_emojify(self):
+        self.assertEqual(kv.emojify("\U0001F966 Obst \u2192 \u2713 \u00a9", "image"),
+                         '<img class="emo" src="/emoji/1f966.png" alt="\U0001F966"> Obst \u2192 \u2713 \u00a9')
+        self.assertEqual(kv.emojify("<p title='\U0001F966'>\U0001F966 Obst</p>", "strip"), "<p title='\U0001F966'>Obst</p>")
+        self.assertEqual(kv.emojify("\U0001F966", "keep"), "\U0001F966")
+        self.assertEqual(kv.twemoji_code("\u2764\ufe0f"), "2764")
+        self.assertEqual(kv.twemoji_code("\U0001F469\u200d\U0001F467"), "1f469-200d-1f467")
+
     def test_ttf_codepoints_and_map(self):
         self.assertEqual(kv.ttf_codepoints(make_ttf([65, 256, 300])), {65, 256, 300})
         self.assertEqual(kv.parse_icon_map(ICON_DART), {"apple": 256, "milk": 257, "soap": 258})
