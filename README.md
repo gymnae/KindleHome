@@ -6,7 +6,9 @@ touch-enabled todo list for one project of a self-hosted
 
 - Quick overview of the open tasks in a project, sorted by due date (or priority, position…)
 - Tap the box to tick a task off (or tap again to undo)
-- Subtasks are shown nested under their parent and can be ticked off, including done ones
+- Subtasks are listed on the task's detail page, so the main list stays uncluttered.
+  Both kinds work: real subtasks, and checklist items typed in the description
+  (`- [ ] item`). Both can be ticked off, done ones included
 - Tap a task's text to open its detail page, with the description, its subtasks (tickable,
   tappable to go deeper), its parent task and a field to add a subtask
 - Add new tasks, optionally as a subtask of an existing task
@@ -102,11 +104,10 @@ After a reboot, run *Start todo display* again (it is not started automatically)
 ### Usage tips
 
 - Tap a task's text (not the box) to open its details. `¶` in the list means the
-  task has a description, and `1/3` means 1 of 3 subtasks are done. Tap the
+  task has a description, and `1/3` means 1 of 3 subtasks or checklist items are done. Tap the
   project name at the top to go back. The detail page also goes back to the
   list on its own after 5 minutes without input (`DETAIL_RETURN_SECONDS`).
-  If the list gets too long, set `LIST_SUBTASKS=0` to show subtasks only on
-  the detail page.
+  To show subtasks nested in the main list as well, set `LIST_SUBTASKS=1`.
 - Tap a box to tick a task off. It is struck through right away and
   disappears at the next sync. Tap again before then to undo.
 - Tap the text field to add a task with the on-screen keyboard. Choose a

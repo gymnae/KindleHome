@@ -173,6 +173,8 @@ class ServerTest(unittest.TestCase):
 
 
 class TaskTests(ServerTest):
+    extra_env = {"LIST_SUBTASKS": "1"}  # nested subtasks in the list (default: detail page only)
+
     def test_root_redirects_to_default_project(self):
         status, _, headers = self.req("/")
         self.assertEqual(status, 303)
@@ -188,7 +190,7 @@ class TaskTests(ServerTest):
         parent = body.index('data-id="2"')
         self.assertLess(parent, body.index('data-id="3"'))
         self.assertIn('class="task done" data-id="4"', body)
-        self.assertIn('<span class="cnt">1/2</span>', body)
+        self.assertIn('<span class="cnt">2/3</span>', body)  # 1/2 subtasks + 1/1 checklist
         self.assertEqual(body.count('data-id="3"'), 1)     # not duplicated as a root
         self.assertIn('<span class="prio">!!</span>', body)
         self.assertIn('class="due over"', body)
@@ -251,7 +253,7 @@ class DetailTests(ServerTest):
     def test_list_rows_link_to_details(self):
         _, body, _ = self.req("/p/1/list")
         self.assertIn('<a class="open" href="/t/2?p=1">', body)
-        self.assertIn('<a class="open" href="/t/3?p=1">', body)   # subtasks too
+        self.assertNotIn('data-id="3"', body)   # subtasks only on the detail page by default
         self.assertIn('<span class="more">\u00b6</span>', body)    # has description
 
     def test_detail_page(self):
@@ -264,7 +266,9 @@ class DetailTests(ServerTest):
         self.assertNotIn("alert(1)", body)
         self.assertNotIn("onerror", body)
         self.assertNotIn("javascript:", body)
-        self.assertIn('<li class="ck on"><span class="box">', body)
+        self.assertIn('<li class="ck on"><form class="ckf" method="post" action="/check">'
+                      '<input type="hidden" name="id" value="2"><input type="hidden" name="i" value="0">'
+                      '<input type="hidden" name="done" value="0">', body)
         # subtasks are tickable rows that link further down
         self.assertIn('name="id" value="3"', body)
         self.assertIn('class="task done" data-id="4"', body)
@@ -288,13 +292,40 @@ class DetailTests(ServerTest):
 
 
 class FlatListTests(ServerTest):
-    extra_env = {"LIST_SUBTASKS": "0"}
-
-    def test_subtasks_only_in_details(self):
+    def test_subtasks_only_in_details_by_default(self):
         _, body, _ = self.req("/p/1/list")
         self.assertIn('data-id="2"', body)
         self.assertNotIn('data-id="3"', body)
-        self.assertIn('<span class="cnt">1/2</span>', body)
+        self.assertIn('<span class="cnt">2/3</span>', body)
+
+
+class ChecklistTests(ServerTest):
+    ajax = {"X-Requested-With": "XMLHttpRequest"}
+
+    def test_untick_html_checklist_item(self):
+        status, _, _ = self.req("/check", {"id": "2", "i": "0", "done": "0", "back": "/t/2?p=1"}, self.ajax)
+        self.assertEqual(status, 204)
+        desc = self.fake.tasks[2]["description"]
+        self.assertIn('data-checked="false"', desc)
+        self.assertIn('<input type="checkbox">', desc)
+        self.assertIn("<script>alert(1)</script>", desc)   # rest of the description untouched
+        self.assertEqual(self.fake.tasks[2]["title"], "Clean <kitchen>")
+
+    def test_tick_plain_markdown_item_without_js(self):
+        self.fake.tasks[1]["description"] = "Shopping:\n- [ ] eggs\n- [x] milk\n* [ ] bread"
+        _, body, _ = self.req("/t/1?p=1")
+        self.assertIn('<div class="ck"><form class="ckf"', body)
+        self.assertIn('<span class="ckt">bread</span>', body)
+        status, _, headers = self.req("/check", {"id": "1", "i": "2", "done": "1", "back": "/t/1?p=1"})
+        self.assertEqual((status, headers["Location"]), (303, "/t/1?p=1"))
+        self.assertEqual(self.fake.tasks[1]["description"], "Shopping:\n- [ ] eggs\n- [x] milk\n* [x] bread")
+        _, body, _ = self.req("/p/1/list")
+        self.assertIn('<span class="cnt">2/3</span>', body)
+
+    def test_missing_item_is_an_error(self):
+        status, body, _ = self.req("/check", {"id": "2", "i": "5", "done": "1"}, self.ajax)
+        self.assertEqual(status, 502)
+        self.assertIn("reload", body)
 
 
 class AccessKeyTests(ServerTest):
@@ -323,6 +354,22 @@ class UnitTests(unittest.TestCase):
     def test_assignee_names(self):
         self.assertEqual(kv.assignee_names({"assignees": None}), [])
         self.assertEqual(kv.assignee_names({"assignees": [{"username": "x", "name": " "}, {}]}), ["x"])
+
+    def test_checklist_helpers(self):
+        html = ('<ul data-type="taskList"><li data-checked="false" data-type="taskItem"><label>'
+                '<input type="checkbox"><span></span></label><div><p>a</p></div></li>'
+                '<li data-checked="true" data-type="taskItem"><label><input type="checkbox" checked="checked">'
+                '</label><div><p>b</p></div></li></ul>')
+        self.assertEqual(kv.checklist_progress(html), (1, 2))
+        ticked = kv.toggle_checklist(html, 0, True)
+        self.assertEqual(kv.checklist_progress(ticked), (2, 2))
+        self.assertEqual(ticked.count('checked="checked"'), 2)
+        unticked = kv.toggle_checklist(html, 1, False)
+        self.assertEqual(kv.checklist_progress(unticked), (0, 2))
+        self.assertNotIn("checked=", unticked.replace("data-checked=", ""))
+        self.assertIsNone(kv.toggle_checklist(html, 2, True))
+        self.assertEqual(kv.checklist_progress("1. [X] a\r\n  - [ ] b\nno [ ] item"), (1, 2))
+        self.assertEqual(kv.toggle_checklist("1. [X] a\r\n  - [ ] b", 1, True), "1. [X] a\r\n  - [x] b")
 
     def test_null_date(self):
         self.assertIsNone(kv.parse_date("0001-01-01T00:00:00Z"))

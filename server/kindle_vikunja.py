@@ -75,7 +75,7 @@ class Config:
         self.sort = env.get("SORT", "due").strip().lower()
         self.font_size = int(env.get("FONT_SIZE", "24"))
         self.lang = env.get("UI_LANG", "en").strip().lower()
-        self.list_subtasks = env.get("LIST_SUBTASKS", "1").lower() not in ("0", "false", "no")
+        self.list_subtasks = env.get("LIST_SUBTASKS", "0").lower() not in ("0", "false", "no")
         self.home_after = int(env.get("DETAIL_RETURN_SECONDS", "300"))
         self.timeout = float(env.get("VIKUNJA_TIMEOUT", "15"))
         self.verify_tls = env.get("VIKUNJA_VERIFY_TLS", "1").lower() not in ("0", "false", "no")
@@ -165,6 +165,17 @@ class Vikunja:
 
     def task(self, task_id):
         return self.request("GET", f"/tasks/{task_id}")[0]
+
+    def set_check(self, task_id, index, done):
+        """Tick/untick the index-th checklist item ("- [ ]") of a task's description."""
+        task = self.request("GET", f"/tasks/{task_id}")[0]
+        desc = task.get("description") or ""
+        new = toggle_checklist(desc, index, done)
+        if new is None:
+            raise VikunjaError("Checklist item not found (description changed?), reload the page", 409)
+        if new != desc:
+            task["description"] = new
+            self.request("POST", f"/tasks/{task_id}", body=task)
 
     def set_done(self, task_id, done):
         # Vikunja's update overwrites every field, so send back the full task.
@@ -288,9 +299,10 @@ class _Sanitizer(HTMLParser):
     VOID = {"br", "hr"}
     SKIP = {"script", "style", "head", "title", "iframe", "object", "embed", "svg", "template"}
 
-    def __init__(self):
+    def __init__(self, check_form=None):
         super().__init__(convert_charrefs=True)
         self.out, self.stack, self.skip = [], [], 0
+        self.check_form, self.check_index = check_form, 0
 
     def handle_starttag(self, tag, attrs):
         if tag in self.SKIP:
@@ -310,9 +322,10 @@ class _Sanitizer(HTMLParser):
             self.out.append(f"<{out}>")
             return
         attrs = dict(attrs)
-        if out == "li" and "data-checked" in attrs:  # tiptap checklist item
-            on = " on" if attrs.get("data-checked") == "true" else ""
-            self.out.append(f'<li class="ck{on}"><span class="box"><span class="mark"></span></span>')
+        if out == "li" and attrs.get("data-checked") in ("true", "false"):  # tiptap checklist item
+            on = attrs["data-checked"] == "true"
+            self.out.append(f'<li class="ck{" on" if on else ""}">' + _check_box(self.check_form, self.check_index, on))
+            self.check_index += 1
         else:
             self.out.append(f"<{out}>")
         self.stack.append((tag, out))
@@ -342,18 +355,98 @@ class _Sanitizer(HTMLParser):
         return "".join(self.out) + "".join(f"</{out}>" for _, out in reversed(self.stack))
 
 
+# A checklist item in a plain-text (markdown) description: "- [ ] text" / "* [x] text" / "1. [ ] text"
+CHECK_LINE = re.compile(r"^(\s*(?:[-*+]|\d+\.)\s+\[)([ xX])(\].*)$")
+# ... and in Vikunja's rich-text (tiptap) descriptions
+CHECK_HTML = re.compile(r'(<li\b[^>]*?\bdata-checked=")(true|false)(")', re.I)
+
+
+def _is_html(value):
+    return bool(re.search(r"<[a-zA-Z/!]", value))
+
+
+def checklist_progress(value):
+    """(done, total) of the checklist items in a description."""
+    value = value or ""
+    if _is_html(value):
+        states = [m.group(2).lower() for m in CHECK_HTML.finditer(value)]
+    else:
+        states = ["false" if m.group(2) == " " else "true"
+                  for m in map(CHECK_LINE.match, value.split("\n")) if m]
+    return states.count("true"), len(states)
+
+
+def toggle_checklist(value, index, done):
+    """Description with the index-th checklist item set to done (None if there is no such item)."""
+    if not _is_html(value):
+        lines, n = value.split("\n"), 0
+        for i, line in enumerate(lines):
+            m = CHECK_LINE.match(line)
+            if m:
+                if n == index:
+                    lines[i] = m.group(1) + ("x" if done else " ") + m.group(3)
+                    return "\n".join(lines)
+                n += 1
+        return None
+    matches = list(CHECK_HTML.finditer(value))
+    if index >= len(matches):
+        return None
+    m = matches[index]
+    head = value[:m.start(2)] + ("true" if done else "false") + value[m.end(2):m.end()]
+    rest = value[m.end():]
+    # keep tiptap's own <input type="checkbox" checked> in sync (up to the next item)
+    nxt = re.search(r"<li\b|</li>", rest, re.I)
+    seg, tail = (rest[:nxt.start()], rest[nxt.start():]) if nxt else (rest, "")
+
+    def fix_input(mi):
+        tag = re.sub(r'\s+checked(\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+))?', "", mi.group(0))
+        return tag[:-1].rstrip("/ ") + (' checked="checked"' if done else "") + ">"
+
+    seg = re.sub(r"<input\b[^>]*>", fix_input, seg, count=1, flags=re.I)
+    return head + seg + tail
+
+
+def _check_box(form, index, on):
+    """Tick box for a checklist item: a form when tickable (detail page), else just a box."""
+    if not form:
+        return '<span class="box"><span class="mark"></span></span>'
+    task_id, back = form
+    return (
+        '<form class="ckf" method="post" action="/check">'
+        f'<input type="hidden" name="id" value="{task_id}">'
+        f'<input type="hidden" name="i" value="{index}">'
+        f'<input type="hidden" name="done" value="{"0" if on else "1"}">'
+        f'<input type="hidden" name="back" value="{esc(back)}">'
+        '<button type="submit" class="box"><span class="mark"></span></button></form>'
+    )
+
+
 def has_description(value):
     return bool(re.sub(r"<[^>]*>|&nbsp;|\s", "", value or ""))
 
 
-def description_html(value):
-    """Safe HTML for a task description ('' if it is empty)."""
+def description_html(value, check_form=None):
+    """Safe HTML for a task description ('' if it is empty).
+
+    check_form=(task_id, back_url) makes checklist items tickable.
+    """
     value = value or ""
     if not has_description(value):
         return ""
-    if not re.search(r"<[a-zA-Z/!]", value):  # plain text / markdown from old Vikunja versions
-        return esc(value).replace("\n", "<br>")
-    sanitizer = _Sanitizer()
+    if not _is_html(value):  # plain text / markdown
+        out, n = [], 0
+        for line in value.split("\n"):
+            m = CHECK_LINE.match(line)
+            if m:
+                on = m.group(2) != " "
+                out.append(f'<div class="ck{" on" if on else ""}">{_check_box(check_form, n, on)}'
+                           f'<span class="ckt">{esc(m.group(3)[1:].strip())}</span></div>')
+                n += 1
+            else:
+                out.append(esc(line) + "<br>")
+        html_ = "".join(out)
+        return html_[:-4] if html_.endswith("<br>") else html_
+    sanitizer = _Sanitizer(check_form)
     sanitizer.feed(value)
     return sanitizer.result()
 
@@ -420,9 +513,12 @@ h2.sec{font-size:.75em;margin:18px 0 4px;padding-bottom:2px;border-bottom:3px so
 .desc ol{list-style:decimal}
 .desc li.ck{list-style:none;margin-left:-1.2em}
 .desc li.ck div,.desc li.ck p{display:inline;margin:0}
-.desc li.ck.on{text-decoration:line-through}
+.ck{padding:5px 0}
+.ck.on>div,.ck.on>p,.ck.on>.ckt{text-decoration:line-through}
 .box{position:relative;display:inline-block;width:.9em;height:.9em;margin-right:.4em;border:2px solid #000;vertical-align:-.1em}
-.ck.on>.box .mark{display:block}
+.ck.on>.box .mark,.ck.on>.ckf .mark{display:block}
+.ckf{display:inline;margin:0}
+.ckf .box{width:1.5em;height:1.5em;margin:0 .5em 0 0;padding:0;border:3px solid #000;border-radius:0;background:#fff;-webkit-appearance:none;vertical-align:middle}
 .desc pre{white-space:pre-wrap;border:1px solid #000;padding:4px}
 .desc blockquote{margin:0 0 .5em;padding-left:8px;border-left:4px solid #000}
 .desc table{border-collapse:collapse;margin-bottom:.5em}
@@ -512,21 +608,37 @@ JS = r"""
     });
   }
 
+  // Tick/untick right away, revert if the server says no.
+  function toggleVia(f, holder, cls) {
+    var field = f.elements["done"], target = field.value === "1", body = serialize(f);
+    setCls(holder, cls, target);
+    field.value = target ? "0" : "1";
+    xhr("POST", f.action, body, function (ok, r) {
+      if (ok) { status(""); lastRefresh = 0; return; }   // re-sync once idle
+      setCls(holder, cls, !target);
+      field.value = target ? "1" : "0";
+      status(errText(r), true);
+    });
+  }
+
+  // Tapping a checklist item's text ticks it too (bigger target than the box).
+  document.addEventListener("click", function (ev) {
+    var el = ev.target;
+    if (closest(el, "ckf")) return;                      // the box: handled as submit
+    for (var a = el; a && a !== document; a = a.parentNode) if (a.tagName === "A") return;
+    var ck = closest(el, "ck"), f = ck && ck.getElementsByTagName("form")[0];
+    if (f && hasCls(f, "ckf")) { ev.preventDefault(); touch(); toggleVia(f, ck, "on"); }
+  }, false);
+
   document.addEventListener("submit", function (ev) {
     var f = ev.target;
     touch();
     if (hasCls(f, "t")) {
       ev.preventDefault();
-      var li = closest(f, "task"), field = f.elements["done"], target = field.value === "1";
-      var body = serialize(f);
-      setCls(li, "done", target);
-      field.value = target ? "0" : "1";
-      xhr("POST", "/toggle", body, function (ok, r) {
-        if (ok) { status(""); lastRefresh = 0; return; }   // re-sync once idle
-        setCls(li, "done", !target);
-        field.value = target ? "1" : "0";
-        status(errText(r), true);
-      });
+      toggleVia(f, closest(f, "task"), "done");
+    } else if (hasCls(f, "ckf")) {
+      ev.preventDefault();
+      toggleVia(f, closest(f, "ck"), "on");
     } else if (f.id === "add") {
       ev.preventDefault();
       var title = f.elements["title"];
@@ -641,9 +753,12 @@ class Renderer:
         names = assignee_names(t)
         if names:
             parts.append(f'<span class="who">{esc(", ".join(names))}</span>')
-        sub = kids.get(t["id"])
-        if sub:
-            parts.append(f'<span class="cnt">{sum(1 for s in sub if s.get("done"))}/{len(sub)}</span>')
+        sub = kids.get(t["id"]) or []
+        ck_done, ck_total = checklist_progress(t.get("description"))
+        total = len(sub) + ck_total
+        if total:
+            done_count = sum(1 for s in sub if s.get("done")) + ck_done
+            parts.append(f'<span class="cnt">{done_count}/{total}</span>')
         for label in t.get("labels") or []:
             parts.append(f'<span class="lbl">{esc(label.get("title"))}</span>')
         if has_description(t.get("description")):
@@ -749,7 +864,7 @@ class Renderer:
         rows = "".join(self._node(s, {}, ctx) for s in subs)
         parents = " ".join(f'<a href="/t/{p["id"]}?p={project_id}">{esc(p.get("title"))}</a>'
                            for p in _rel(task, "parenttask") if "id" in p)
-        desc = description_html(task.get("description"))
+        desc = description_html(task.get("description"), check_form=(tid, here))
         body = (
             f'<div id="hd"><h1><a class="open" href="{home}">\u2039 {esc(project_title or t["back"])}</a></h1>'
             f'<div class="nav"><a href="{esc(here)}">{esc(t["refresh"])}</a>{self._exit_link()}</div></div>'
@@ -897,6 +1012,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._detail_page(int(m_task.group(1)))
         if method == "POST" and m and m.group(2) == "/add":
             return self._add(m.group(1))
+        if method == "POST" and path == "/check":
+            return self._check()
         if method == "POST" and path == "/toggle":
             return self._toggle()
         self._send(404, self.render.message_page("404", path))
@@ -919,6 +1036,21 @@ class Handler(BaseHTTPRequestHandler):
             project_title = None
         self._send(200, self.render.detail_page(task, project_id, project_title))
 
+    def _check(self):
+        form = self._form()
+        try:
+            task_id, index = int(form.get("id", "")), int(form.get("i", ""))
+        except ValueError:
+            return self._send(400, "bad task id or item", "text/plain")
+        self.api.set_check(task_id, index, form.get("done") == "1")
+        self._done_redirect(form)
+
+    def _done_redirect(self, form):
+        if self._ajax():
+            return self._send(204, "")
+        back = form.get("back", "/")
+        self._redirect(back if re.fullmatch(r"/p/-?\d+|/t/\d+(\?p=-?\d+)?", back) else "/")
+
     def _toggle(self):
         form = self._form()
         try:
@@ -926,10 +1058,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._send(400, "bad task id", "text/plain")
         self.api.set_done(task_id, form.get("done") == "1")
-        if self._ajax():
-            return self._send(204, "")
-        back = form.get("back", "/")
-        self._redirect(back if re.fullmatch(r"/p/-?\d+|/t/\d+(\?p=-?\d+)?", back) else "/")
+        self._done_redirect(form)
 
     def _add(self, project_id):
         form = self._form()
