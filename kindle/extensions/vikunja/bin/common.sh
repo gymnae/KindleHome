@@ -34,6 +34,18 @@ hide_bars_if_configured() {
     fi
 }
 
+# start_detached <script> [args]: run a script in the background so that it
+# survives KUAL closing its menu (KUAL may kill its whole process group).
+start_detached() {
+    if command -v setsid >/dev/null 2>&1; then
+        setsid /bin/sh "$@" </dev/null >/dev/null 2>&1 &
+    elif command -v nohup >/dev/null 2>&1; then
+        nohup /bin/sh "$@" </dev/null >/dev/null 2>&1 &
+    else
+        /bin/sh "$@" </dev/null >/dev/null 2>&1 &
+    fi
+}
+
 stop_watchdog() {
     if [ -f "$PIDFILE" ]; then
         kill "$(cat "$PIDFILE")" 2>/dev/null

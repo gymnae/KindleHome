@@ -5,7 +5,7 @@
 
 if [ "$1" != "run" ]; then
     # detach, so KUAL closing its menu can't kill us before the bar is restored
-    nohup /bin/sh "$EXT/bin/testbars.sh" run >/dev/null 2>&1 &
+    start_detached "$EXT/bin/testbars.sh" run
     exit 0
 fi
 

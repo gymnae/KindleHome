@@ -3,7 +3,9 @@
 # keeps the screensaver off, wifi on, and periodically re-opens the page.
 . /mnt/us/extensions/vikunja/bin/common.sh
 
-log "watchdog started"
+trap '' HUP
+echo $$ > "$PIDFILE"
+log "watchdog started (pid $$)"
 hide_bars_if_configured
 last=$(date +%s)
 while true; do
