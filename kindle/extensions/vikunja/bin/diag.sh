@@ -17,23 +17,31 @@ log "collecting diagnostics into $OUT"
     echo "=== appreg (browser / web apps)"
     sqlite3 /var/local/appreg.db \
         "SELECT handlerId, name, value FROM properties WHERE handlerId LIKE '%browser%' OR value LIKE '%mesquite%' OR value LIKE '%waf%';" 2>&1
-    echo "=== tools";           for t in setsid nohup ps sqlite3; do echo "$t: $(command -v $t)"; done
+    echo "=== tools";           ls -l /usr/bin/setsid /bin/setsid /sbin/setsid /usr/bin/nohup /bin/nohup 2>&1
     echo "=== watchdog";        cat "$PIDFILE" 2>&1 && kill -0 "$(cat "$PIDFILE")" 2>&1 && echo running
-    echo "=== processes";       ps 2>&1 | head -n 80
-    echo "=== binaries";        ls -l /usr/bin/mesquite /usr/bin/browserd /usr/bin/pillow* 2>&1
-    echo "=== komic (example of a fullscreen web app on this device)"
-    ls -lR /mnt/us/extensions/komic 2>&1 | head -n 60
-    for f in /mnt/us/extensions/komic/bin/config.xml /mnt/us/extensions/komic/*.json \
-             /mnt/us/extensions/komic/*.xml /mnt/us/extensions/komic/bin/*.sh /mnt/us/extensions/komic/*.sh; do
-        [ -f "$f" ] && { echo "--- $f"; head -c 6000 "$f"; echo; }
+    echo "=== mesquite apps";   ls /var/local/mesquite/ 2>&1
+    for app in browser store; do
+        dir=/var/local/mesquite/$app
+        echo "=== $app: files";    ls -l "$dir" 2>&1 | head -n 40
+        echo "=== $app: config.xml"; cat "$dir/config.xml" 2>&1 | head -n 150
+        echo "=== $app: chrome / pillow / messaging usage"
+        grep -r -i -e configureChrome -e dismissChrome -e displayChrome -e titleBar -e "kindle\.chrome" \
+            -e "kindle\.messaging" -e "kindle\.appmgr" -e "\.pillow" "$dir" 2>/dev/null \
+            | cut -c1-300 | head -n 60
     done
-    echo "--- komic: chrome / messaging calls in its scripts"
-    grep -rhoE ".{0,80}(chrome|pillow|messaging|appmgr|titleBar|kindle\.[a-zA-Z]+).{0,120}" \
-        /mnt/us/extensions/komic/bin --include=*.js --include=*.html 2>/dev/null | head -n 60
-    echo "--- appreg entries for komic"
-    sqlite3 /var/local/appreg.db "SELECT * FROM properties WHERE handlerId LIKE '%komic%';" 2>&1
-    sqlite3 /var/local/appreg.db "SELECT * FROM handlerIds WHERE handlerId LIKE '%komic%';" 2>&1
-    sqlite3 /var/local/appreg.db ".tables" 2>&1
+    echo "=== komic: config files"
+    for f in /mnt/us/extensions/komic/config.xml /mnt/us/extensions/komic/menu.json \
+             /mnt/us/extensions/komic/bin/config.xml; do
+        [ -f "$f" ] && { echo "--- $f"; cat "$f" | head -n 120; }
+    done
+    echo "--- komic: head of index.html"; head -n 60 /mnt/us/extensions/komic/bin/index.html 2>&1
+    echo "--- komic: chrome / pillow / messaging usage"
+    grep -r -i -e chrome -e pillow -e "kindle\.messaging" -e "kindle\.appmgr" -e titleBar \
+        /mnt/us/extensions/komic/bin 2>/dev/null | grep -v "/locales/" | cut -c1-300 | head -n 60
+    echo "--- komic: scripts"; ls -l /mnt/us/extensions/komic/bin/resource/Scripts 2>&1
+    for f in /mnt/us/extensions/komic/bin/resource/Scripts/*.sh; do
+        [ -f "$f" ] && { echo "--- $f"; cat "$f" | head -n 80; }
+    done
     echo "=== kindle-vikunja log"; tail -n 200 "$LOG" 2>&1
 } > "$OUT" 2>&1
 log "diagnostics done"

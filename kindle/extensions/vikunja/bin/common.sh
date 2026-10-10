@@ -36,14 +36,15 @@ hide_bars_if_configured() {
 
 # start_detached <script> [args]: run a script in the background so that it
 # survives KUAL closing its menu (KUAL may kill its whole process group).
+# (The Kindle's busybox ash has no `command` builtin, so probe paths directly.)
 start_detached() {
-    if command -v setsid >/dev/null 2>&1; then
-        setsid /bin/sh "$@" </dev/null >/dev/null 2>&1 &
-    elif command -v nohup >/dev/null 2>&1; then
-        nohup /bin/sh "$@" </dev/null >/dev/null 2>&1 &
-    else
-        /bin/sh "$@" </dev/null >/dev/null 2>&1 &
-    fi
+    for s in /usr/bin/setsid /bin/setsid /sbin/setsid /usr/sbin/setsid; do
+        if [ -x "$s" ]; then
+            "$s" /bin/sh "$@" </dev/null >/dev/null 2>&1 &
+            return
+        fi
+    done
+    /bin/sh "$@" </dev/null >/dev/null 2>&1 &
 }
 
 stop_watchdog() {
