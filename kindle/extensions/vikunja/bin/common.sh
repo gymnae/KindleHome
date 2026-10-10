@@ -28,7 +28,7 @@ open_page() {
 # Called by the watchdog (never from a KUAL action, which must return quickly):
 # wait until the browser is up, as it redraws the bar when it starts.
 hide_bars_if_configured() {
-    if [ "${KV_HIDE_BARS:-1}" = "1" ]; then
+    if [ "${KV_HIDE_BARS:-0}" = "1" ]; then
         sleep 8
         hide_bars
     fi

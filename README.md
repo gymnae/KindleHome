@@ -113,9 +113,10 @@ After a reboot, run *Start todo display* again (it is not started automatically)
 - Auto-refresh pauses while you type or right after you tapped something.
 - *Refresh* in the header reloads the whole page, which also clears e-ink
   ghosting. The page does a full reload on its own every 6 hours as well.
-- **Fullscreen:** by default the top bar (status line and browser toolbar)
-  is hidden a few seconds after the page opens (`KV_HIDE_BARS` in
-  `config.sh`). The bar holds the Home button, and the Paperwhite has no
+- **Fullscreen (experimental, off by default):** `KV_HIDE_BARS=1` in
+  `config.sh` hides the top bar (status line and browser toolbar) a few
+  seconds after the page opens. On some firmware this breaks the display, so
+  try it with KUAL → *Hide top bar* first. The bar holds the Home button, and the Paperwhite has no
   physical one, so hiding it means there is no on-screen way out of the
   browser. To get out, hold the power button until the Kindle restarts (the
   bar comes back and the display does not start again on its own). Over SSH,
