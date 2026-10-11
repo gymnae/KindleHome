@@ -559,14 +559,17 @@ class DashboardTests(ServerTest):
     def test_dashboard_tiles(self):
         status, body, _ = self.req("/")
         self.assertEqual(status, 200)
-        self.assertIn('<a class="tile" href="/p/1"><div class="th"><span class="tt">Home</span>'
+        self.assertIn('<a class="tile fit" href="/p/1" data-total="2"><div class="th"><span class="tt">ToDo</span>'
                       '<span class="tc">2 open</span>', body)
-        self.assertIn('<a class="tile" href="/s/7"><div class="th"><span class="tt">Groceries</span>'
-                      '<span class="tc">3 items</span>', body)
+        self.assertIn('<a class="tile fit" href="/s/7" data-total="3"><div class="th"><span class="tt">Shopping List'
+                      '</span><span class="tc">3 items</span>', body)
+        self.assertIn('<div class="tmore" style="display:none">+0 more</div>', body)   # filled in by fitDashboard
+        self.assertIn('<body class="dash">', body)
+        self.assertIn('"dash": true', body)
         self.assertIn('Milk <span class="due">2 l</span>', body)
         self.assertIn('"list": "/dash/list"', body)
         status, frag, headers = self.req("/dash/list")
-        self.assertTrue(frag.startswith('<a class="tile"'))
+        self.assertTrue(frag.startswith('<a class="tile fit"'))
         self.assertTrue(headers["X-Today"])
 
     def test_pages_link_home(self):
@@ -578,7 +581,7 @@ class DashboardTests(ServerTest):
         status, body, _ = self.req("/")
         self.assertEqual(status, 200)
         self.assertIn('href="/p/1"', body)
-        self.assertIn('<a class="tile" href="/shop"><div class="th"><span class="tt">KitchenOwl</span>', body)
+        self.assertIn('<a class="tile" href="/shop"><div class="th"><span class="tt">Shopping List</span>', body)
         self.assertRegex(body, r'<div class="terr">KitchenOwl GET /household[^<]*: 500 boom</div>')
 
     def test_shopping_list_page(self):
@@ -618,6 +621,18 @@ class DashboardTests(ServerTest):
         self.req("/s/7/item/1/desc", {"title": ""}, self.ajax)       # clearing is allowed
         self.assertEqual(self.ko.on_list[1], "")
         self.assertEqual(self.req("/s/7/add", {"title": " "}, self.ajax)[0], 400)
+
+    def test_switch_shopping_lists(self):
+        _, body, _ = self.req("/s/7")
+        self.assertIn('<a href="/shop/lists">Lists</a>', body)        # household has two lists
+        status, page, _ = self.req("/shop/lists")
+        self.assertEqual(status, 200)
+        self.assertIn('<a href="/s/9">Hardware <span class="meta">0 items</span></a>', page)
+        self.assertIn('<a href="/s/7">Groceries <span class="meta">3 items · default</span></a>', page)  # LIST_ID=7
+        status, other, _ = self.req("/s/9")
+        self.assertEqual(status, 200)
+        self.assertIn("<h1>Hardware</h1>", other)
+        self.assertIn('href="/s/7"', self.req("/")[1])                 # dashboard keeps the default list
 
     def test_unknown_list(self):
         status, body, _ = self.req("/s/99")
@@ -677,7 +692,6 @@ class EmojiTests(ServerTest):
         img = '<img class="emo" src="/emoji/1f6cd.png" alt="\U0001F6CD\ufe0f">'
         self.assertIn(f"<h1>{img} Daily</h1>", body)
         self.assertIn("<title>\U0001F6CD\ufe0f Daily</title>", body)   # not inside <title>
-        self.assertIn(img, self.req("/")[1])                          # dashboard tile
         status, png, headers = self.req("/emoji/1f6cd.png")
         self.assertEqual((status, headers["Content-Type"]), (200, "image/png"))
         status, _, headers = self.req("/emoji/1f34e.png")              # not available: invisible gif
@@ -875,7 +889,7 @@ class CalendarTests(ServerTest):
     def test_upcoming_events_tile(self):
         status, body, _ = self.req("/")
         self.assertEqual(status, 200)
-        self.assertLess(body.index("Groceries"), body.index('<div class="tile cal">'))   # below the lists
+        self.assertLess(body.index("Shopping List"), body.index('<div class="tile cal">'))   # below the lists
         tile = body[body.index('<div class="tile cal">'):]
         names = re.findall(r'<div class="what">([^<]+)</div>', tile)
         self.assertEqual(names, ["Parents&#x27; evening", "Birthday Cara", "Dentist"])   # CALDAV_EVENTS=3
@@ -916,6 +930,15 @@ class CalendarAuthTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+
+class DefaultListTests(ServerTest):
+    kitchenowl = True
+    extra_env = {"KITCHENOWL_LIST_ID": ""}
+
+    def test_kitchenowl_default_is_oldest_list(self):
+        self.assertEqual(self.req("/shop")[2]["Location"], "/s/7")   # ids 9 and 7: 7 is KitchenOwl's default
+        self.assertIn("Groceries <span class=\"meta\">3 items · default", self.req("/shop/lists")[1])
 
 
 class KitchenOwlOnlyTests(ServerTest):

@@ -53,6 +53,8 @@ STRINGS = {
         "back": "Back", "subtasks": "Subtasks", "parent": "Part of",
         "new_subtask": "New subtask…",
         "weekend": "Weekend", "calendar": "Upcoming", "no_events": "No upcoming events.",
+        "todo_title": "ToDo", "shop_title": "Shopping List", "lists": "Lists", "pick_list": "Choose a list",
+        "default": "default",
         "home": "Home", "recent": "Recently bought", "new_item": "Add item…", "other": "Other",
         "open_count": "{n} open", "item_count": "{n} items", "more": "+{n} more",
         "list_empty": "The shopping list is empty.", "not_configured": "{name} is not configured.",
@@ -68,6 +70,8 @@ STRINGS = {
         "back": "Zurück", "subtasks": "Unteraufgaben", "parent": "Teil von",
         "new_subtask": "Neue Unteraufgabe…",
         "weekend": "Wochenende", "calendar": "Termine", "no_events": "Keine Termine.",
+        "todo_title": "ToDo", "shop_title": "Einkaufsliste", "lists": "Listen", "pick_list": "Liste wählen",
+        "default": "Standard",
         "home": "Start", "recent": "Zuletzt gekauft", "new_item": "Artikel hinzufügen…", "other": "Sonstiges",
         "open_count": "{n} offen", "item_count": "{n} Artikel", "more": "+{n} weitere",
         "list_empty": "Die Einkaufsliste ist leer.", "not_configured": "{name} ist nicht eingerichtet.",
@@ -374,20 +378,33 @@ class KitchenOwl(JsonApi):
             self._household = str(households[0]["id"])
         return self._household
 
-    def shopping_list(self, list_id=None):
-        """One list with its "items" and "recentItems" (default: configured or household default list)."""
+    def _all_lists(self):
         lists = self.request("GET", f"/household/{self.household_id()}/shoppinglist",
                              {"recent_limit": max(1, self.cfg.ko_recent)})[0] or []
         if not lists:
             raise ApiError("KitchenOwl: the household has no shopping list")
-        wanted = str(list_id or self.cfg.ko_list or "")
-        if wanted:
-            found = [lst for lst in lists if str(lst.get("id")) == wanted]
-            if not found:
-                raise ApiError(f"KitchenOwl: shopping list {wanted} not found", 404)
-            lst = found[0]
-        else:
-            lst = min(lists, key=lambda lst: lst.get("id", 0))  # KitchenOwl's default list
+        return lists
+
+    def _default_id(self, lists):
+        """KITCHENOWL_LIST_ID, else KitchenOwl's default list (the household's oldest)."""
+        return str(self.cfg.ko_list or min(lst.get("id", 0) for lst in lists))
+
+    def lists(self):
+        """All shopping lists of the household: [{id, name, count, default}]."""
+        lists = self._all_lists()
+        default = self._default_id(lists)
+        return [{"id": lst["id"], "name": lst.get("name") or "", "count": len(lst.get("items") or []),
+                 "default": str(lst["id"]) == default} for lst in sorted(lists, key=lambda lst: lst.get("id", 0))]
+
+    def shopping_list(self, list_id=None):
+        """One list with its "items" and "recentItems" (default: configured or household default list)."""
+        lists = self._all_lists()
+        wanted = str(list_id or self._default_id(lists))
+        found = [lst for lst in lists if str(lst.get("id")) == wanted]
+        if not found:
+            raise ApiError(f"KitchenOwl: shopping list {wanted} not found", 404)
+        lst = found[0]
+        lst["list_count"] = len(lists)
         # older KitchenOwl versions don't embed the items
         if "items" not in lst:
             lst["items"] = self.request("GET", f"/shoppinglist/{lst['id']}/items")[0] or []
@@ -1249,6 +1266,8 @@ ul{list-style:none;margin:0;padding:0}
 .tile li{padding:5px 0;border-top:1px dotted #000;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .tile li .due{font-size:.85em;margin-left:8px}
 .tile .tmore{font-size:.8em;margin-top:4px}
+.tile.fit{overflow:hidden}
+body.dash{padding-bottom:6px}
 .tile.cal{padding:4px 0 0;border:0}
 .evwrap{margin:8px -10px 0}
 .evrow{display:table;width:100%;table-layout:fixed;border-collapse:separate;border-spacing:10px 0}
@@ -1362,6 +1381,7 @@ JS = r"""
       if (r.responseText !== current) {
         $("list").innerHTML = r.responseText;
         current = r.responseText;
+        fitDashboard();
         updatePager();
       }
       $("upd").textContent = r.getResponseHeader("X-Updated") || "";
@@ -1579,6 +1599,57 @@ JS = r"""
     $("pgup").addEventListener("click", pageBy(-1), false);
     $("pgdn").addEventListener("click", pageBy(1), false);
   }
+  // Dashboard: everything on one screen. The list tiles share the free height equally (fixed
+  // height, so they don't jump around) and show the same number of entries; the rest is
+  // summed up in "+N more".
+  function fitDashboard() {
+    if (!CFG.dash || !$("list")) return;
+    var tiles = [], kids = $("list").childNodes, i, j;
+    for (i = 0; i < kids.length; i++) if (hasCls(kids[i], "fit")) tiles.push(kids[i]);
+    if (!tiles.length) return;
+    var used = 0;
+    for (i = 0; i < tiles.length; i++) {   // natural layout first, then measure
+      tiles[i].style.height = "";
+      var all = tiles[i].getElementsByTagName("li");
+      for (j = 0; j < all.length; j++) all[j].style.display = "";
+      used += tiles[i].offsetHeight;
+    }
+    var rest = document.body.offsetHeight - used;   // header, calendar, gaps
+    var per = Math.floor((viewHeight() - rest - 2) / tiles.length);
+    var info = [], common = 1000;
+    for (i = 0; i < tiles.length; i++) {
+      var tile = tiles[i], lis = tile.getElementsByTagName("li"), more = tile.getElementsByTagName("div");
+      var moreEl = null;
+      for (j = 0; j < more.length; j++) if (hasCls(more[j], "tmore")) moreEl = more[j];
+      var ul = tile.getElementsByTagName("ul")[0];
+      var moreShown = moreEl && moreEl.style.display !== "none";
+      var base = tile.offsetHeight - (ul ? ul.offsetHeight : 0) - (moreShown ? moreEl.offsetHeight : 0);
+      var liH = lis.length ? lis[0].offsetHeight : 0;
+      var moreH = (moreEl && moreEl.offsetHeight) || liH;
+      var it = { tile: tile, lis: lis, more: moreEl, total: +tile.getAttribute("data-total") || 0 };
+      if (liH) {
+        it.all = Math.floor((per - base) / liH);                 // without a "+N more" line
+        common = Math.min(common, Math.max(1, Math.floor((per - base - moreH - 4) / liH)));
+      }
+      info.push(it);
+    }
+    for (i = 0; i < info.length; i++) {
+      var t = info[i], show = t.total <= t.all ? t.total : common;
+      t.tile.style.height = per + "px";
+      for (j = 0; j < t.lis.length; j++) t.lis[j].style.display = j < show ? "" : "none";
+      if (t.more) {
+        var hidden = t.total - Math.min(show, t.lis.length);
+        t.more.textContent = CFG.more.replace("{n}", hidden);
+        t.more.style.display = hidden > 0 ? "block" : "none";
+      }
+    }
+  }
+  fitDashboard();
+  window.addEventListener("resize", fitDashboard, false);
+  // icon font and emoji pictures arrive later and may change line heights: measure again
+  // (if nothing changed, nothing is redrawn)
+  window.addEventListener("load", fitDashboard, false);
+  setTimeout(fitDashboard, 2000);
   updatePager();
 
   current = $("list") ? $("list").innerHTML : null;
@@ -1599,13 +1670,13 @@ class Renderer:
 
     # -- building blocks ---------------------------------------------------
 
-    def layout(self, title, body, script=""):
+    def layout(self, title, body, script="", body_class=""):
         css = CSS.replace("%%FS%%", str(self.cfg.font_size)).replace("%%DFS%%", str(self.cfg.dash_font_size))
         return (
             '<!DOCTYPE html><html><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             f"<title>{esc(title)}</title><style>{css}</style></head>"
-            f"<body>{body}{script}</body></html>"
+            f"<body{f' class={chr(34)}{body_class}{chr(34)}' if body_class else ''}>{body}{script}</body></html>"
         )
 
     def fmt_date(self, d, now):
@@ -1806,14 +1877,18 @@ class Renderer:
         now = now or dt.datetime.now()
         return f'{self.t["weekdays"][now.weekday()]} {now.strftime("%d.%m.")}'
 
-    def _tile(self, href, title, count="", lines=(), more=0, error=None, note=""):
+    def _tile(self, href, title, count="", lines=(), more=0, error=None, note="", total=None):
+        """A dashboard tile. With total (list tiles), the page fits it to the screen (fitDashboard)."""
         items = "".join(f"<li>{line}</li>" for line in lines)
         tag = "a" if href else "div"  # tiles without a page (calendar) aren't links
+        fit = total is not None
         return (
-            f'<{tag} class="tile"' + (f' href="{esc(href)}"' if href else "") + '>'
+            f'<{tag} class="tile{" fit" if fit else ""}"' + (f' href="{esc(href)}"' if href else "")
+            + (f' data-total="{total}"' if fit else "") + '>'
             f'<div class="th"><span class="tt">{esc(title)}</span><span class="tc">{esc(count)}</span></div>'
             + (f"<ul>{items}</ul>" if items else "")
-            + (f'<div class="tmore">{esc(self.t["more"].format(n=more))}</div>' if more > 0 else "")
+            + (f'<div class="tmore"{"" if more > 0 else " style=\"display:none\""}>'
+               f'{esc(self.t["more"].format(n=max(more, 0)))}</div>' if fit or more > 0 else "")
             + (f'<div class="tmore">{esc(note)}</div>' if note else "")
             + (f'<div class="terr">{esc(error)}</div>' if error else "")
             + f"</{tag}>"
@@ -1835,7 +1910,7 @@ class Renderer:
                 + (f'<div class="evwrap"><div class="evrow">{"".join(lines)}</div></div>' if lines
                    else f'<div class="tmore">{esc(self.t["no_events"])}</div>') + "</div>")
 
-    def vikunja_tile(self, project_id, title, tasks, now=None, max_lines=6):
+    def vikunja_tile(self, project_id, title, tasks, now=None, max_lines=12):
         now = now or dt.datetime.now().astimezone()
         roots, _ = build_tree(tasks, self.cfg.sort)
         lines = []
@@ -1845,14 +1920,14 @@ class Renderer:
                    if d else "")
             lines.append(esc(t.get("title")) + due)
         return self._tile(f"/p/{project_id}", title, self.t["open_count"].format(n=len(roots)),
-                          lines, len(roots) - len(lines))
+                          lines, len(roots) - len(lines), total=len(roots))
 
-    def shop_tile(self, lst, max_lines=6):
+    def shop_tile(self, lst, max_lines=12):
         items = sorted(lst.get("items") or [], key=_shop_item_key)
         lines = [self._koi(i) + esc(i.get("name")) + (f' <span class="due">{esc(i["description"])}</span>'
                                        if i.get("description") else "") for i in items[:max_lines]]
-        return self._tile(f"/s/{lst['id']}", lst.get("name") or "KitchenOwl",
-                          self.t["item_count"].format(n=len(items)), lines, len(items) - len(lines))
+        return self._tile(f"/s/{lst['id']}", self.t["shop_title"],
+                          self.t["item_count"].format(n=len(items)), lines, len(items) - len(lines), total=len(items))
 
     def error_tile(self, href, title, error):
         return self._tile(href, title, error=str(error))
@@ -1864,7 +1939,8 @@ class Renderer:
             f'<a href="/">{esc(self.t["refresh"])}</a>{self._exit_link()}</div></div>'
             f'<div id="status"></div><div id="list">{tiles_html}</div>'
         )
-        return self.layout(self.t["home"], body, self._script(list="/dash/list", home=None))
+        return self.layout(self.t["home"], body, self._script(list="/dash/list", home=None, dash=True,
+                                                              more=self.t["more"]), body_class="dash")
 
     # -- KitchenOwl shopping list --------------------------------------------
 
@@ -1931,7 +2007,9 @@ class Renderer:
         body = (
             f'<div id="hd"><h1>{esc(title)}</h1><div class="nav">'
             f'<span id="upd">{dt.datetime.now().strftime("%H:%M")}</span>{self._home_link()}'
-            f'<a href="/s/{lid}">{esc(t["refresh"])}</a>{self._exit_link()}</div></div>'
+            f'<a href="/s/{lid}">{esc(t["refresh"])}</a>'
+            + (f'<a href="/shop/lists">{esc(t["lists"])}</a>' if lst.get("list_count", 1) > 1 else "")
+            + f'{self._exit_link()}</div></div>'
             + self._add_form(f"/s/{lid}/add", t["new_item"])
             + f'<div id="sugg"></div><div id="status"></div><div id="list">{list_html}</div>'
         )
@@ -1961,6 +2039,15 @@ class Renderer:
         body = (f'<div id="hd"><h1>{esc(self.t["pick"])}</h1></div>'
                 f'<div class="plist">{"".join(rows)}</div>')
         return self.layout(self.t["projects"], body)
+
+    def shop_lists_page(self, lists):
+        rows = "".join(
+            f'<a href="/s/{lst["id"]}">{esc(lst["name"])} <span class="meta">'
+            f'{esc(self.t["item_count"].format(n=lst["count"]))}'
+            + (f' · {esc(self.t["default"])}' if lst["default"] else "") + "</span></a>" for lst in lists)
+        body = (f'<div id="hd"><h1>{esc(self.t["pick_list"])}</h1><div class="nav">{self._home_link()}'
+                f'</div></div><div class="plist">{rows}</div>')
+        return self.layout(self.t["lists"], body)
 
     def message_page(self, title, message):
         return self.layout(title, f'<div id="hd"><h1>{esc(title)}</h1></div>'
@@ -2075,7 +2162,7 @@ class Handler(BaseHTTPRequestHandler):
             if not icons or not icons.mapping():
                 return self._send(404, "no icon font", "text/plain")
             return self._send(200, icons.font, "font/ttf", cache="max-age=604800")
-        if path == "/shop" or path.startswith("/s/"):
+        if path in ("/shop", "/shop/lists") or path.startswith("/s/"):
             if not self.ko:
                 return self._send(404, self.render.message_page(
                     "404", self.render.t["not_configured"].format(name="KitchenOwl")))
@@ -2115,16 +2202,19 @@ class Handler(BaseHTTPRequestHandler):
                 tiles.append(render._tile("/projects", "Vikunja"))
             for pid in self.cfg.projects:
                 try:
-                    tiles.append(render.vikunja_tile(pid, self.api.project_title(pid), self.api.open_tasks(pid)))
+                    title = render.t["todo_title"]
+                    if len(self.cfg.projects) > 1:  # several projects: say which one
+                        title += " · " + self.api.project_title(pid)
+                    tiles.append(render.vikunja_tile(pid, title, self.api.open_tasks(pid)))
                 except ApiError as e:
                     self.log_message("%s", e)
-                    tiles.append(render.error_tile(f"/p/{pid}", "Vikunja", e))
+                    tiles.append(render.error_tile(f"/p/{pid}", render.t["todo_title"], e))
         if self.ko:
             try:
                 tiles.append(render.shop_tile(self.ko.shopping_list()))
             except ApiError as e:
                 self.log_message("%s", e)
-                tiles.append(render.error_tile("/shop", "KitchenOwl", e))
+                tiles.append(render.error_tile("/shop", render.t["shop_title"], e))
         if self.calendar:  # at the bottom
             try:
                 tiles.append(render.calendar_tile(self.calendar.upcoming()))
@@ -2136,6 +2226,8 @@ class Handler(BaseHTTPRequestHandler):
     def _shop_route(self, method, path):
         if method == "GET" and path == "/shop":
             return self._redirect(f"/s/{self.ko.shopping_list()['id']}")
+        if method == "GET" and path == "/shop/lists":
+            return self._send(200, self.render.shop_lists_page(self.ko.lists()))
         m = re.fullmatch(r"/s/(\d+)(/list|/add|/toggle|/pick|/suggest|/item/(\d+)/desc)?", path)
         if not m:
             return self._send(404, self.render.message_page("404", path))

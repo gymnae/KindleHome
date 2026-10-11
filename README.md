@@ -25,7 +25,17 @@ Todo lists:
   labels, subtask progress
 - Re-syncs automatically, but only redraws when something changed (saves e-ink flashes)
 
+Dashboard:
+
+- Fits on one screen, without scrolling. The *ToDo* and *Shopping List* tiles
+  share the free space equally, keep a fixed size, and show the same number
+  of entries. The rest is summed up as "+N more". The detail pages show the
+  real project and list names, and they can be as long as needed
+
 Shopping list:
+
+- Several lists in the household: *Lists* in the header switches between them.
+  The dashboard always shows KitchenOwl's default list (or `KITCHENOWL_LIST_ID`)
 
 - Items are grouped by KitchenOwl category. Tap the box to tick an item off
 - Tap the note next to an item (`+` when empty) to edit it, e.g. "2 l"
@@ -141,6 +151,7 @@ Open `http://<server>:8080/` in a desktop browser to check that it works.
 | `/`          | dashboard (or the default project / picker)   |
 | `/s/<id>`    | KitchenOwl shopping list `<id>`               |
 | `/shop`      | the configured/default shopping list          |
+| `/shop/lists`| pick one of the household's shopping lists    |
 | `/p/<id>`    | the todo page for project `<id>`              |
 | `/t/<id>`    | detail page of task `<id>`                    |
 | `/projects`  | project picker                                |
