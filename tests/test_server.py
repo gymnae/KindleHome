@@ -1,5 +1,6 @@
 """End-to-end tests against a fake Vikunja API.  Run: python3 -m unittest discover tests"""
 
+import html
 import json
 import os
 import re
@@ -86,8 +87,10 @@ class FakeVikunja:
                 if p == "/api/v1/projects/1":
                     return self.reply(200, {"id": 1, "title": "Home",
                                             "owner": {"id": 1, "username": "anna", "name": "Anna Example"}})
-                if p == "/api/v1/projects/1/projectusers":
-                    return self.reply(200, [{"id": 2, "username": "ben", "name": "Ben Smith", "right": 1},
+                if p == "/api/v1/projects/1/projectusers":   # like an API token without access to it
+                    return self.reply(401, {"message": "missing permission"})
+                if p == "/api/v1/projects/1/users":
+                    return self.reply(200, [{"id": 2, "username": "ben", "name": "Ben Smith", "permission": 1},
                                             {"id": 1, "username": "anna", "name": "Anna Example"}])
                 if p == "/api/v1/projects/1/teams":
                     return self.reply(200, [{"id": 5, "name": "Family"}])
@@ -694,6 +697,181 @@ class IconUnitTests(unittest.TestCase):
     def test_ttf_codepoints_and_map(self):
         self.assertEqual(kv.ttf_codepoints(make_ttf([65, 256, 300])), {65, 256, 300})
         self.assertEqual(kv.parse_icon_map(ICON_DART), {"apple": 256, "milk": 257, "soap": 258})
+
+
+ICS_RULES = """BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:gym
+SUMMARY:Gym\, upper body
+DTSTART;TZID=Europe/Berlin:20260907T100000
+DTEND;TZID=Europe/Berlin:20260907T110000
+RRULE:FREQ=WEEKLY;BYDAY=MO,WE
+EXDATE;TZID=Europe/Berlin:20261014T100000
+BEGIN:VALARM
+TRIGGER:-PT15M
+SUMMARY:alarm text must be ignored
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:gym
+RECURRENCE-ID;TZID=Europe/Berlin:20261019T100000
+SUMMARY:Gym (moved)
+DTSTART;TZID=Europe/Berlin:20261020T180000
+DTEND;TZID=Europe/Berlin:20261020T190000
+END:VEVENT
+BEGIN:VEVENT
+UID:club
+SUMMARY:Book club
+DTSTART:20260130T170000Z
+DURATION:PT2H
+RRULE:FREQ=MONTHLY;BYDAY=-1FR
+END:VEVENT
+BEGIN:VEVENT
+UID:pills
+SUMMARY:Pills
+DTSTART:20261010T070000Z
+RRULE:FREQ=DAILY;COUNT=3
+END:VEVENT
+BEGIN:VEVENT
+UID:fest
+SUMMARY:Harvest festival
+DTSTART;VALUE=DATE:20261010
+DTEND;VALUE=DATE:20261013
+END:VEVENT
+BEGIN:VEVENT
+UID:off
+SUMMARY:Cancelled thing
+STATUS:CANCELLED
+DTSTART:20261012T080000Z
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+class CalendarUnitTests(unittest.TestCase):
+    def occurrences(self, days=30):
+        now = kv.dt.datetime(2026, 10, 11, 12, 0, tzinfo=kv.dt.timezone.utc)
+        end = now + kv.dt.timedelta(days=days)
+        events = kv.parse_events(ICS_RULES)
+        moved = {(e["uid"], e["recurrence_id"]) for e in events if e["recurrence_id"]}
+        out = []
+        for e in events:
+            for start, _ in kv.event_occurrences(e, now, end):
+                if not e["recurrence_id"] and (e["uid"], start) in moved:
+                    continue
+                out.append((start, e["summary"]))
+        return sorted(out)
+
+    def test_parsing(self):
+        events = kv.parse_events(ICS_RULES)
+        self.assertEqual(len(events), 5)                      # cancelled one dropped
+        self.assertEqual(events[0]["summary"], "Gym, upper body")
+        self.assertTrue(events[4]["all_day"])
+
+    def test_recurrence(self):
+        berlin = kv.ZoneInfo("Europe/Berlin")
+        got = [(s.astimezone(berlin).strftime("%m-%d %H:%M"), name) for s, name in self.occurrences()]
+        self.assertIn("Harvest festival", [name for _, name in got])   # all-day since the 10th, still ongoing
+        self.assertIn(("10-12 09:00", "Pills"), got)              # COUNT=3: 10th, 11th (past), 12th
+        self.assertNotIn(("10-13 09:00", "Pills"), got)
+        self.assertIn(("10-12 10:00", "Gym, upper body"), got)
+        self.assertNotIn(("10-14 10:00", "Gym, upper body"), got)  # EXDATE
+        self.assertNotIn(("10-19 10:00", "Gym, upper body"), got)  # moved ...
+        self.assertIn(("10-20 18:00", "Gym (moved)"), got)         # ... to here
+        self.assertIn(("10-26 10:00", "Gym, upper body"), got)     # after the DST change: still 10:00
+        self.assertIn(("10-30 18:00", "Book club"), got)           # last Friday of October (17:00Z = 18:00 CET)
+
+    def test_nth_weekday(self):
+        self.assertEqual(kv._nth_weekday(2026, 10, 4, -1), 30)
+        self.assertEqual(kv._nth_weekday(2026, 10, 0, 1), 5)
+        self.assertIsNone(kv._nth_weekday(2026, 2, 0, 5))
+
+
+class FakeCalDav:
+    """REPORT -> multistatus with already expanded events; /feed.ics only answers GET."""
+
+    def __init__(self):
+        now = kv.dt.datetime.now(kv.dt.timezone.utc).replace(microsecond=0)
+        z = lambda d: d.strftime("%Y%m%dT%H%M%SZ")
+        self.expanded = "".join(
+            f"BEGIN:VEVENT\r\nUID:e{i}\r\nSUMMARY:{name}\r\nDTSTART:{z(now + delta)}\r\n"
+            f"DTEND:{z(now + delta + kv.dt.timedelta(hours=1))}\r\nEND:VEVENT\r\n"
+            for i, (name, delta) in enumerate([("Dentist", kv.dt.timedelta(days=2)),
+                                                ("Parents' evening", kv.dt.timedelta(hours=3)),
+                                                ("Too far away", kv.dt.timedelta(days=90))]))
+        tomorrow = (kv.dt.datetime.now() + kv.dt.timedelta(days=1)).strftime("%Y%m%d")
+        self.feed = (f"BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:b\r\nSUMMARY:Birthday Cara\r\n"
+                     f"DTSTART;VALUE=DATE:{tomorrow}\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:x\r\n"
+                     f"SUMMARY:Later\r\nDTSTART:{z(now + kv.dt.timedelta(days=5))}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+        self.password = "app-pass"
+
+    def handler(fake):
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def send(self, code, body, ctype):
+                data = body.encode()
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def authorized(self):
+                expected = "Basic " + kv.base64.b64encode(f"me:{fake.password}".encode()).decode()
+                if self.headers.get("Authorization") != expected:
+                    self.send(401, "no", "text/plain")
+                    return False
+                return True
+
+            def do_REPORT(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                if not self.authorized():
+                    return
+                if self.path != "/cal/":
+                    return self.send(405, "not a calendar", "text/plain")
+                ics = "BEGIN:VCALENDAR\r\n" + fake.expanded + "END:VCALENDAR\r\n"
+                xml = ('<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">'
+                       f'<d:response><d:href>/cal/1.ics</d:href><d:propstat><d:prop><cal:calendar-data>{html.escape(ics)}'
+                       '</cal:calendar-data></d:prop></d:propstat></d:response></d:multistatus>')
+                self.send(207, xml, "application/xml")
+
+            def do_GET(self):
+                if self.authorized():
+                    self.send(200, fake.feed, "text/calendar")
+
+        return H
+
+
+class CalendarTests(ServerTest):
+    vikunja = False
+    kitchenowl = True
+
+    def setUp(self):
+        self.cal = FakeCalDav()
+        server = serve(ThreadingHTTPServer(("127.0.0.1", 0), self.cal.handler()))
+        base = f"http://127.0.0.1:{server.server_port}"
+        self.extra_env = {"CALDAV_URL": f"{base}/cal/ {base}/feed.ics", "CALDAV_USER": "me",
+                          "CALDAV_PASSWORD": "app-pass"}
+        super().setUp()
+        self.servers.insert(0, server)
+
+    def test_upcoming_events_tile(self):
+        status, body, _ = self.req("/")
+        self.assertEqual(status, 200)
+        tile = body[body.index('<div class="tile">'):]
+        self.assertLess(tile.index("Upcoming"), tile.index("Groceries"))   # first tile, before the lists
+        names = re.findall(r"</b> ([^<]+)</li>", tile[:tile.index("</div></div>") if "</div></div>" in tile else None])
+        self.assertEqual(names[:3], ["Parents&#x27; evening", "Birthday Cara", "Dentist"])
+        self.assertNotIn("Later", tile.split("Groceries")[0])               # only CALDAV_EVENTS=3
+        self.assertIn("<b>tomorrow</b> Birthday Cara", tile)                # all-day: no time
+
+    def test_wrong_password(self):
+        self.cal.password = "changed"
+        _, body, _ = self.req("/")
+        self.assertIn('<div class="terr">Calendar', body)
+        self.assertIn("CALDAV_USER/CALDAV_PASSWORD", body)
 
 
 class KitchenOwlOnlyTests(ServerTest):

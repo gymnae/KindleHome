@@ -5,7 +5,8 @@ touch-enabled household display:
 
 - the todo list of one or more [Vikunja](https://vikunja.io) projects
 - the shopping list of a [KitchenOwl](https://kitchenowl.org) household
-- a dashboard that shows both, with a tile per list, and opens them on a tap
+- the next events from CalDAV calendars or `.ics` links
+- a dashboard that shows all of it, with a tile per list, and opens them on a tap
 
 Todo lists:
 
@@ -59,7 +60,7 @@ In Vikunja go to *Settings → API Tokens → Create a token* and grant at least
 | projects / views | read_all, (views tasks) read_all            |
 | tasks            | read_all, read_one, create, update          |
 | tasks_assignees  | create (assignee chips when adding a task)  |
-| projects_users, projects_teams, teams | read_all (people chips; optional) |
+| projects_users, projects_teams, teams | read_all (people chips; without them only the owner is offered) |
 
 The permission names in the UI differ a bit between versions. If anything
 fails with a 401/403, pick all permissions in these groups. Choose a long
@@ -94,6 +95,24 @@ fonts. The server replaces them with small pictures from
 [Twemoji](https://github.com/jdecked/twemoji) (graphics © Twitter/X and
 contributors, CC-BY 4.0). It fetches them from a CDN when first needed and
 caches them in memory. `EMOJI=strip` removes emoji instead.
+
+## 1c. Calendar (optional)
+
+Set `CALDAV_URL` to one or more calendar URLs, separated by spaces, and the
+dashboard shows the next `CALDAV_EVENTS` (3) events in a tile at the top.
+
+- **CalDAV**, e.g. Nextcloud
+  `https://cloud.example.com/remote.php/dav/calendars/<user>/<calendar>/`,
+  with `CALDAV_USER` and `CALDAV_PASSWORD`. For Nextcloud, use an app
+  password (*Settings → Security*). The server asks the calendar for the next
+  `CALDAV_DAYS` (30) days and lets it expand repeating events.
+- **iCalendar links** (`.ics`, `webcal://`, e.g. Google's "secret address in
+  iCal format"). The server reads the file itself. Repeating events are
+  supported in their common forms: daily, weekly on given days, monthly by
+  date or e.g. "last Friday", and yearly, with skipped and moved dates.
+
+All-day events show the date only, and events in progress count as upcoming.
+The result is cached for 5 minutes.
 
 ## 2. Run the server
 

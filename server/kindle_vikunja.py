@@ -16,6 +16,7 @@ import html
 import json
 import os
 import re
+import base64
 import ssl
 import struct
 import sys
@@ -24,9 +25,15 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from http import cookies
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # Python < 3.9
+    ZoneInfo = None
 
 NULL_DATE_PREFIX = "0001-01-01"  # Vikunja's "no date"
 MAX_DEPTH = 4  # subtask nesting shown on screen
@@ -43,7 +50,7 @@ STRINGS = {
         "pick": "Choose a project",
         "back": "Back", "subtasks": "Subtasks", "parent": "Part of",
         "new_subtask": "New subtask…",
-        "weekend": "Weekend",
+        "weekend": "Weekend", "calendar": "Upcoming", "no_events": "No upcoming events.",
         "home": "Home", "recent": "Recently bought", "new_item": "Add item…", "other": "Other",
         "open_count": "{n} open", "item_count": "{n} items", "more": "+{n} more",
         "list_empty": "The shopping list is empty.", "not_configured": "{name} is not configured.",
@@ -58,7 +65,7 @@ STRINGS = {
         "pick": "Projekt wählen",
         "back": "Zurück", "subtasks": "Unteraufgaben", "parent": "Teil von",
         "new_subtask": "Neue Unteraufgabe…",
-        "weekend": "Wochenende",
+        "weekend": "Wochenende", "calendar": "Termine", "no_events": "Keine Termine.",
         "home": "Start", "recent": "Zuletzt gekauft", "new_item": "Artikel hinzufügen…", "other": "Sonstiges",
         "open_count": "{n} offen", "item_count": "{n} Artikel", "more": "+{n} weitere",
         "list_empty": "Die Einkaufsliste ist leer.", "not_configured": "{name} ist nicht eingerichtet.",
@@ -93,9 +100,20 @@ class Config:
         self.ko_recent = max(0, min(120, int(env.get("KITCHENOWL_RECENT", "12"))))
         self.kitchenowl = bool(self.ko_url and self.ko_token)
 
+        # CalDAV calendar(s) or iCalendar (.ics) feeds: upcoming events on the dashboard
+        self.caldav_urls = [u.replace("webcal://", "https://", 1)
+                            for u in re.split(r"[\s,]+", env.get("CALDAV_URL", "").strip()) if u]
+        self.caldav_user = env.get("CALDAV_USER", "")
+        self.caldav_password = env.get("CALDAV_PASSWORD", "")
+        self.caldav_title = env.get("CALDAV_TITLE", "").strip()
+        self.caldav_events = max(1, int(env.get("CALDAV_EVENTS", "3")))
+        self.caldav_days = max(1, int(env.get("CALDAV_DAYS", "30")))
+        self.caldav_verify_tls = env.get("CALDAV_VERIFY_TLS", "1").lower() not in ("0", "false", "no")
+        self.caldav = bool(self.caldav_urls)
+
         self.dashboard = (env.get("DASHBOARD", "auto").strip().lower() in ("1", "yes", "true")
                           or (env.get("DASHBOARD", "auto").strip().lower() == "auto"
-                              and (self.kitchenowl or len(self.projects) > 1)))
+                              and (self.kitchenowl or self.caldav or len(self.projects) > 1)))
         self.dashboard_after = int(env.get("DASHBOARD_RETURN_SECONDS", "0"))
         self.host = env.get("LISTEN_HOST", "0.0.0.0")
         self.port = int(env.get("LISTEN_PORT", "8080"))
@@ -275,32 +293,42 @@ class Vikunja(JsonApi):
         self._update(task_id, lambda task: task.__setitem__("done", bool(done)))
 
     def project_users(self, project_id):
-        """Everyone with access to a project (owner, shared users, team members), cached 10 min.
+        """Everyone with access to a project: owner, shared users and team members.
 
-        Parts the token may not read (e.g. teams) are skipped."""
+        Each source is asked separately (tokens may lack the permission for some of them); a
+        complete result is cached for 10 minutes, an incomplete one for 1 minute."""
         cached = self._users.get(str(project_id))
-        if cached and time.time() - cached[1] < 600:
+        if cached and time.time() - cached[1] < cached[2]:
             return cached[0]
-        users = {}
+        users, failed = {}, []
 
         def add(user):
+            user = user.get("user") if isinstance(user.get("user"), dict) else user
             if user and user.get("id"):
                 users.setdefault(user["id"], user)
 
-        add(self.project(project_id).get("owner"))
-        try:
-            for user in self.get_all(f"/projects/{project_id}/projectusers"):
-                add(user)
-            for team in self.get_all(f"/projects/{project_id}/teams"):
-                members = team.get("members")
-                if members is None:
-                    members = self.request("GET", f"/teams/{team['id']}")[0].get("members") or []
-                for member in members:
-                    add(member)
-        except ApiError as e:
-            sys.stderr.write(f"project users of {project_id} incomplete: {e}\n")
+        def team_members(team):
+            members = team.get("members")
+            if members is None:
+                members = self.request("GET", f"/teams/{team['id']}")[0].get("members") or []
+            return members
+
+        add(self.project(project_id).get("owner") or {})
+        sources = (
+            ("projectusers", lambda: self.get_all(f"/projects/{project_id}/projectusers")),  # all with access
+            ("users", lambda: self.get_all(f"/projects/{project_id}/users")),                # shared with users
+            ("teams", lambda: [m for team in self.get_all(f"/projects/{project_id}/teams")
+                               for m in team_members(team)]),                                 # via teams
+        )
+        for name, fetch in sources:
+            try:
+                for user in fetch():
+                    add(user)
+            except ApiError as e:
+                failed.append(name)
+                sys.stderr.write(f"project {project_id}: can't read {name} ({e})\n")
         result = sorted(users.values(), key=lambda u: (_first_name(u).lower(), u["id"]))
-        self._users[str(project_id)] = (result, time.time())
+        self._users[str(project_id)] = (result, time.time(), 60 if failed else 600)
         return result
 
     def create_task(self, project_id, title, parent_id=None, due=None, assignees=()):
@@ -373,6 +401,278 @@ class KitchenOwl(JsonApi):
     def set_description(self, list_id, item_id, description):
         """Set an item's description; also (re-)adds the item to the list if it isn't on it."""
         self.request("POST", f"/shoppinglist/{list_id}/item/{item_id}", body={"description": description})
+
+
+# --------------------------------------------------------------------------
+# Calendar (CalDAV / iCalendar)
+# --------------------------------------------------------------------------
+
+_WEEKDAYS = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
+
+
+def _local_time(naive):
+    """Attach the local time zone (TZ, with DST rules when available)."""
+    tz = os.environ.get("TZ", "")
+    if ZoneInfo and tz:
+        try:
+            return naive.replace(tzinfo=ZoneInfo(tz))
+        except Exception:  # noqa: BLE001
+            pass
+    return naive.astimezone()
+
+
+def _ical_lines(text):
+    lines = []
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if line[:1] in (" ", "\t") and lines:
+            lines[-1] += line[1:]  # unfold continuation lines
+        elif line:
+            lines.append(line)
+    return lines
+
+
+def _ical_prop(line):
+    """("NAME", {params}, "value") of a content line (colons in quoted params allowed)."""
+    quoted = False
+    for i, ch in enumerate(line):
+        if ch == '"':
+            quoted = not quoted
+        elif ch == ":" and not quoted:
+            head, value = line[:i], line[i + 1:]
+            break
+    else:
+        return None
+    name, *params = head.split(";")
+    return name.upper(), {k.upper(): v.strip('"') for k, _, v in (p.partition("=") for p in params)}, value
+
+
+def _ical_text(value):
+    return re.sub(r"\\([\\;,nN])", lambda m: "\n" if m.group(1) in "nN" else m.group(1), value)
+
+
+def _ical_time(value, params):
+    """(aware datetime, all_day) of a DATE or DATE-TIME value."""
+    v = value.strip()
+    if params.get("VALUE") == "DATE" or (len(v) == 8 and v.isdigit()):
+        return _local_time(dt.datetime(int(v[:4]), int(v[4:6]), int(v[6:8]))), True
+    t = dt.datetime.strptime(v[:15], "%Y%m%dT%H%M%S")
+    if v.endswith("Z"):
+        return t.replace(tzinfo=dt.timezone.utc), False
+    if params.get("TZID") and ZoneInfo:
+        try:
+            return t.replace(tzinfo=ZoneInfo(params["TZID"])), False
+        except Exception:  # noqa: BLE001 - unknown (e.g. Windows) zone names: use local time
+            pass
+    return _local_time(t), False
+
+
+def _ical_duration(value):
+    m = re.fullmatch(r"([+-])?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?", value.strip())
+    if not m:
+        return dt.timedelta(0)
+    sign, w, d, h, mi, sec = m.groups()
+    delta = dt.timedelta(weeks=int(w or 0), days=int(d or 0), hours=int(h or 0), minutes=int(mi or 0),
+                         seconds=int(sec or 0))
+    return -delta if sign == "-" else delta
+
+
+def parse_events(ics):
+    """VEVENTs of an iCalendar text as dicts (start/end aware datetimes, all_day, rrule, ...)."""
+    events, cur, nested = [], None, 0
+    for line in _ical_lines(ics):
+        prop = _ical_prop(line)
+        if not prop:
+            continue
+        name, params, value = prop
+        if name == "BEGIN":
+            if value.upper() == "VEVENT" and cur is None:
+                cur = {"exdates": set(), "summary": "", "uid": "", "rrule": None, "recurrence_id": None}
+            elif cur is not None:
+                nested += 1  # e.g. VALARM
+            continue
+        if name == "END" and cur is not None:
+            if nested:
+                nested -= 1
+            elif value.upper() == "VEVENT":
+                if "start" in cur and cur.get("status") != "CANCELLED":
+                    if "end" not in cur:
+                        cur["end"] = cur["start"] + cur.pop("duration", dt.timedelta(days=1 if cur["all_day"] else 0))
+                    events.append(cur)
+                cur = None
+            continue
+        if cur is None or nested:
+            continue
+        if name == "SUMMARY":
+            cur["summary"] = _ical_text(value)
+        elif name == "UID":
+            cur["uid"] = value
+        elif name == "STATUS":
+            cur["status"] = value.upper()
+        elif name == "DTSTART":
+            cur["start"], cur["all_day"] = _ical_time(value, params)
+        elif name == "DTEND":
+            cur["end"] = _ical_time(value, params)[0]
+        elif name == "DURATION":
+            cur["duration"] = _ical_duration(value)
+        elif name == "RRULE":
+            cur["rrule"] = {k.upper(): v for k, _, v in (p.partition("=") for p in value.split(";"))}
+        elif name == "EXDATE":
+            cur["exdates"].update(_ical_time(v, params)[0] for v in value.split(",") if v)
+        elif name == "RECURRENCE-ID":
+            cur["recurrence_id"] = _ical_time(value, params)[0]
+    return events
+
+
+def _nth_weekday(year, month, weekday, n):
+    """Day of the n-th (negative: from the end) weekday of a month, or None."""
+    first = dt.date(year, month, 1)
+    days = (dt.date(year + month // 12, month % 12 + 1, 1) - first).days
+    if n > 0:
+        day = 1 + (weekday - first.weekday()) % 7 + (n - 1) * 7
+    else:
+        last_wd = (first.weekday() + days - 1) % 7
+        day = days - (last_wd - weekday) % 7 + (n + 1) * 7
+    return day if 1 <= day <= days else None
+
+
+def _rrule_starts(start, rule, horizon, limit=3000):
+    """Start times of a recurring event up to horizon (FREQ DAILY/WEEKLY/MONTHLY/YEARLY with
+    INTERVAL, COUNT, UNTIL, BYDAY, BYMONTHDAY - the common cases)."""
+    freq, interval = rule.get("FREQ", ""), max(1, int(rule.get("INTERVAL", "1") or 1))
+    count = int(rule["COUNT"]) if rule.get("COUNT", "").isdigit() else None
+    until = None
+    if rule.get("UNTIL"):
+        until, all_day = _ical_time(rule["UNTIL"], {})
+        if all_day:
+            until += dt.timedelta(days=1) - dt.timedelta(seconds=1)
+    byday = [(int(m.group(1)) if m.group(1) else None, _WEEKDAYS[m.group(2)])
+             for m in re.finditer(r"([+-]?\d+)?(MO|TU|WE|TH|FR|SA|SU)", rule.get("BYDAY", ""))]
+    bymonthday = [int(d) for d in rule.get("BYMONTHDAY", "").split(",") if d.lstrip("-").isdigit()]
+    found = 0
+    for k in range(limit):
+        if freq == "DAILY":
+            cands = [start + dt.timedelta(days=k * interval)]
+        elif freq == "WEEKLY":
+            week = start - dt.timedelta(days=start.weekday()) + dt.timedelta(weeks=k * interval)
+            cands = [week + dt.timedelta(days=wd) for wd in sorted({wd for _, wd in byday} or {start.weekday()})]
+        elif freq == "MONTHLY":
+            month0 = start.month - 1 + k * interval
+            year, month = start.year + month0 // 12, month0 % 12 + 1
+            if byday:
+                days = [_nth_weekday(year, month, wd, n or 1) for n, wd in byday]
+            else:
+                days = bymonthday or [start.day]
+            cands = []
+            for day in sorted(d for d in days if d):
+                try:
+                    cands.append(start.replace(year=year, month=month, day=day))
+                except ValueError:
+                    pass  # e.g. the 31st in a short month
+        elif freq == "YEARLY":
+            try:
+                cands = [start.replace(year=start.year + k * interval)]
+            except ValueError:  # 29 Feb
+                cands = []
+        else:
+            return
+        for s in cands:
+            if s < start:
+                continue
+            if (until and s > until) or (count is not None and found >= count) or s > horizon:
+                return
+            found += 1
+            yield s
+
+
+def event_occurrences(event, range_start, range_end):
+    """(start, end) of an event's occurrences overlapping the range."""
+    duration = event["end"] - event["start"]
+    starts = _rrule_starts(event["start"], event["rrule"], range_end) if event["rrule"] else [event["start"]]
+    for s in starts:
+        if s in event["exdates"]:
+            continue
+        e = s + duration
+        if s < range_end and (e > range_start if duration else s >= range_start):
+            yield s, e
+
+
+class Calendar:
+    """Upcoming events from CalDAV calendars or .ics URLs (cached for 5 minutes)."""
+
+    CALDAV = "urn:ietf:params:xml:ns:caldav"
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self._ctx = None if cfg.caldav_verify_tls else ssl._create_unverified_context()
+        self._cache = (None, 0)
+
+    def _request(self, method, url, body=None, headers=None):
+        headers = dict(headers or {}, **{"User-Agent": "kindle-vikunja"})
+        if self.cfg.caldav_user:
+            auth = f"{self.cfg.caldav_user}:{self.cfg.caldav_password}".encode()
+            headers["Authorization"] = "Basic " + base64.b64encode(auth).decode()
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        with urllib.request.urlopen(req, timeout=self.cfg.timeout, context=self._ctx) as resp:
+            return resp.read().decode("utf-8", "replace")
+
+    def _fetch(self, url, start, end):
+        """iCalendar texts for a URL: a CalDAV calendar-query (with server-side expansion of
+        recurring events), or else a plain GET of an .ics file."""
+        fmt = "%Y%m%dT%H%M%SZ"
+        span = f'start="{start.astimezone(dt.timezone.utc):{fmt}}" end="{end.astimezone(dt.timezone.utc):{fmt}}"'
+        query = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            f'<C:calendar-query xmlns:D="DAV:" xmlns:C="{self.CALDAV}">'
+            f'<D:prop><C:calendar-data><C:expand {span}/></C:calendar-data></D:prop>'
+            '<C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT">'
+            f'<C:time-range {span}/></C:comp-filter></C:comp-filter></C:filter></C:calendar-query>'
+        )
+        try:
+            xml = self._request("REPORT", url, query.encode(),
+                                {"Depth": "1", "Content-Type": "application/xml; charset=utf-8"})
+            root = ET.fromstring(xml)
+            return [el.text or "" for el in root.iter(f"{{{self.CALDAV}}}calendar-data")]
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                raise ApiError(f"Calendar {url}: {e.code} {e.reason} (check CALDAV_USER/CALDAV_PASSWORD)", e.code)
+            if e.code not in (400, 404, 405, 406, 415, 501):
+                raise ApiError(f"Calendar {url}: {e.code} {e.reason}", e.code)
+        except ET.ParseError:
+            pass
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise ApiError(f"Cannot reach calendar {url}: {e}") from None
+        try:  # not a CalDAV collection: plain iCalendar file
+            ics = self._request("GET", url)
+        except urllib.error.HTTPError as e:
+            raise ApiError(f"Calendar {url}: {e.code} {e.reason}", e.code)
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise ApiError(f"Cannot reach calendar {url}: {e}") from None
+        if "BEGIN:VCALENDAR" not in ics:
+            raise ApiError(f"Calendar {url}: neither CalDAV nor an iCalendar file")
+        return [ics]
+
+    def upcoming(self, now=None):
+        """The next CALDAV_EVENTS events (ongoing ones included), sorted by start."""
+        cached, at = self._cache
+        if cached is not None and now is None and time.time() - at < 300:
+            return cached
+        now = now or dt.datetime.now().astimezone()
+        end = now + dt.timedelta(days=self.cfg.caldav_days)
+        events = []
+        for url in self.cfg.caldav_urls:
+            for ics in self._fetch(url, now, end):
+                events.extend(parse_events(ics))
+        moved = {(e["uid"], e["recurrence_id"]) for e in events if e["recurrence_id"]}
+        found = []
+        for event in events:
+            for s, e in event_occurrences(event, now, end):
+                if not event["recurrence_id"] and (event["uid"], s) in moved:
+                    continue  # this occurrence was moved/changed: its own VEVENT is used instead
+                found.append({"start": s, "end": e, "all_day": event["all_day"], "summary": event["summary"]})
+        found.sort(key=lambda ev: (ev["start"], ev["summary"]))
+        result = found[:self.cfg.caldav_events]
+        self._cache = (result, time.time())
+        return result
 
 
 def _shop_item_key(item):
@@ -922,6 +1222,7 @@ ul{list-style:none;margin:0;padding:0}
 .tile li{padding:5px 0;border-top:1px dotted #000;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .tile li .due{font-size:.85em;margin-left:8px}
 .tile .tmore{font-size:.8em;margin-top:4px}
+.tile li b{margin-right:6px}
 .tile .terr{font-weight:bold;font-size:.9em;margin-top:6px}
 @font-face{font-family:KOItems;src:url(/ko/items.ttf) format("truetype")}
 .koi{display:inline-block;width:1.4em;margin-right:.3em;font-family:KOItems;font-size:1.3em;line-height:1;text-align:center;vertical-align:middle;font-weight:normal;font-style:normal}
@@ -1465,16 +1766,31 @@ class Renderer:
         now = now or dt.datetime.now()
         return f'{self.t["weekdays"][now.weekday()]} {now.strftime("%d.%m.")}'
 
-    def _tile(self, href, title, count="", lines=(), more=0, error=None):
+    def _tile(self, href, title, count="", lines=(), more=0, error=None, note=""):
         items = "".join(f"<li>{line}</li>" for line in lines)
+        tag = "a" if href else "div"  # tiles without a page (calendar) aren't links
         return (
-            f'<a class="tile" href="{esc(href)}"><div class="th"><span class="tt">{esc(title)}</span>'
-            f'<span class="tc">{esc(count)}</span></div>'
+            f'<{tag} class="tile"' + (f' href="{esc(href)}"' if href else "") + '>'
+            f'<div class="th"><span class="tt">{esc(title)}</span><span class="tc">{esc(count)}</span></div>'
             + (f"<ul>{items}</ul>" if items else "")
             + (f'<div class="tmore">{esc(self.t["more"].format(n=more))}</div>' if more > 0 else "")
+            + (f'<div class="tmore">{esc(note)}</div>' if note else "")
             + (f'<div class="terr">{esc(error)}</div>' if error else "")
-            + "</a>"
+            + f"</{tag}>"
         )
+
+    def calendar_tile(self, events, now=None):
+        now = now or dt.datetime.now().astimezone()
+        lines = []
+        for ev in events:
+            start = ev["start"].astimezone() if not ev["all_day"] else ev["start"]
+            day = max(start, now) if ev["all_day"] else start   # ongoing all-day event: "today"
+            when = self.fmt_date(dt.datetime.combine(day.date(), dt.time()).astimezone(), now)
+            if not ev["all_day"]:
+                when += start.strftime(" %H:%M")
+            lines.append(f"<b>{esc(when)}</b> {esc(ev['summary'])}")
+        return self._tile(None, self.cfg.caldav_title or self.t["calendar"], lines=lines,
+                          note="" if lines else self.t["no_events"])
 
     def vikunja_tile(self, project_id, title, tasks, now=None, max_lines=6):
         now = now or dt.datetime.now().astimezone()
@@ -1618,6 +1934,7 @@ class Handler(BaseHTTPRequestHandler):
     api = None  # Vikunja (None if not configured)
     ko = None   # KitchenOwl (None if not configured)
     emoji = None  # EmojiCache
+    calendar = None  # Calendar (None if not configured)
     render = None
 
     def log_message(self, fmt, *args):
@@ -1749,6 +2066,12 @@ class Handler(BaseHTTPRequestHandler):
     def _tiles(self):
         """Dashboard tiles; a failing service only breaks its own tile."""
         render, tiles = self.render, []
+        if self.calendar:
+            try:
+                tiles.append(render.calendar_tile(self.calendar.upcoming()))
+            except ApiError as e:
+                self.log_message("%s", e)
+                tiles.append(render.error_tile(None, self.cfg.caldav_title or render.t["calendar"], e))
         if self.api:
             if not self.cfg.projects:
                 tiles.append(render._tile("/projects", "Vikunja"))
@@ -1902,15 +2225,16 @@ def make_server(cfg):
         "cfg": cfg, "render": Renderer(cfg, IconFont(cfg) if cfg.kitchenowl and cfg.ko_icons else None),
         "api": Vikunja(cfg) if cfg.vikunja else None,
         "ko": KitchenOwl(cfg) if cfg.kitchenowl else None,
-        "emoji": EmojiCache(cfg)})
+        "emoji": EmojiCache(cfg),
+        "calendar": Calendar(cfg) if cfg.caldav else None})
     return ThreadingHTTPServer((cfg.host, cfg.port), handler)
 
 
 def main():
     cfg = Config()
-    if not cfg.vikunja and not cfg.kitchenowl:
-        sys.exit("Configure VIKUNJA_URL + VIKUNJA_TOKEN and/or KITCHENOWL_URL + KITCHENOWL_TOKEN "
-                 "(see .env.example)")
+    if not cfg.vikunja and not cfg.kitchenowl and not cfg.caldav:
+        sys.exit("Configure VIKUNJA_URL + VIKUNJA_TOKEN, KITCHENOWL_URL + KITCHENOWL_TOKEN "
+                 "and/or CALDAV_URL (see .env.example)")
     server = make_server(cfg)
     services = ", ".join(f"{n} {u}" for n, u, on in (("Vikunja", cfg.api_url, cfg.vikunja),
                                                     ("KitchenOwl", cfg.ko_url, cfg.kitchenowl)) if on)
