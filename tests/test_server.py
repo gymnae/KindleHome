@@ -781,6 +781,17 @@ class CalendarUnitTests(unittest.TestCase):
         self.assertIn(("10-26 10:00", "Gym, upper body"), got)     # after the DST change: still 10:00
         self.assertIn(("10-30 18:00", "Book club"), got)           # last Friday of October (17:00Z = 18:00 CET)
 
+    def test_calendar_url(self):
+        dav = "https://cloud.example.com/remote.php/dav/public-calendars/Aay9rgqp/"
+        self.assertEqual(kv.calendar_url("https://cloud.example.com/apps/calendar/p/Aay9rgqp"), dav)
+        self.assertEqual(kv.calendar_url("https://cloud.example.com/index.php/apps/calendar/p/Aay9rgqp/dayGridMonth/now"), dav)
+        self.assertEqual(kv.calendar_url("https://example.com/nc/apps/calendar/p/Tok3n"),
+                         "https://example.com/nc/remote.php/dav/public-calendars/Tok3n/")
+        self.assertEqual(kv.calendar_url("webcal://example.com/cal.ics"), "https://example.com/cal.ics")
+        self.assertEqual(kv.calendar_url(dav + "?export"), dav + "?export")
+        self.assertEqual(kv.Config({"CALDAV_URL": "https://c.example/apps/calendar/p/X1 https://a.example/b.ics"}).caldav_urls,
+                         ["https://c.example/remote.php/dav/public-calendars/X1/", "https://a.example/b.ics"])
+
     def test_nth_weekday(self):
         self.assertEqual(kv._nth_weekday(2026, 10, 4, -1), 30)
         self.assertEqual(kv._nth_weekday(2026, 10, 0, 1), 5)

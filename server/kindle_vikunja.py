@@ -77,6 +77,17 @@ STRINGS = {
 # Configuration
 # --------------------------------------------------------------------------
 
+def calendar_url(url):
+    """Normalize a calendar URL: webcal:// -> https://, and Nextcloud's public share page
+    (/apps/calendar/p/<token>) -> its CalDAV collection (/remote.php/dav/public-calendars/<token>/)."""
+    if url.startswith("webcal://"):
+        url = "https://" + url[len("webcal://"):]
+    m = re.match(r"(https?://[^?#]*?)/(?:index\.php/)?apps/calendar/p/([A-Za-z0-9]+)", url)
+    if m:
+        return f"{m.group(1)}/remote.php/dav/public-calendars/{m.group(2)}/"
+    return url
+
+
 class Config:
     def __init__(self, env=None):
         env = os.environ if env is None else env
@@ -101,8 +112,7 @@ class Config:
         self.kitchenowl = bool(self.ko_url and self.ko_token)
 
         # CalDAV calendar(s) or iCalendar (.ics) feeds: upcoming events on the dashboard
-        self.caldav_urls = [u.replace("webcal://", "https://", 1)
-                            for u in re.split(r"[\s,]+", env.get("CALDAV_URL", "").strip()) if u]
+        self.caldav_urls = [calendar_url(u) for u in re.split(r"[\s,]+", env.get("CALDAV_URL", "").strip()) if u]
         self.caldav_user = env.get("CALDAV_USER", "")
         self.caldav_password = env.get("CALDAV_PASSWORD", "")
         self.caldav_title = env.get("CALDAV_TITLE", "").strip()

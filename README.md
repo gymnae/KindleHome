@@ -112,6 +112,10 @@ account, put the login into its URL: `https://user:password@host/…`.
   with `CALDAV_USER` and `CALDAV_PASSWORD`. For Nextcloud, use an app
   password (*Settings → Security*). The server asks the calendar for the next
   `CALDAV_DAYS` (30) days and lets it expand repeating events.
+- **Nextcloud public share links** (`https://…/apps/calendar/p/<token>`, a web
+  page) are turned into the matching CalDAV address
+  (`…/remote.php/dav/public-calendars/<token>/`) automatically. No login
+  needed.
 - **iCalendar links** (`.ics`, `webcal://`, e.g. Google's "secret address in
   iCal format"). The server reads the file itself. Repeating events are
   supported in their common forms: daily, weekly on given days, monthly by
