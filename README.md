@@ -99,7 +99,13 @@ caches them in memory. `EMOJI=strip` removes emoji instead.
 ## 1c. Calendar (optional)
 
 Set `CALDAV_URL` to one or more calendar URLs, separated by spaces, and the
-dashboard shows the next `CALDAV_EVENTS` (3) events in a tile at the top.
+dashboard shows the next `CALDAV_EVENTS` (3) events of all of them together,
+in a tile at the top. All URLs go into this one line: a second
+`CALDAV_URL=` line would replace the first.
+
+`CALDAV_USER`/`CALDAV_PASSWORD` are only sent when a server asks for a login,
+so public `.ics` links never receive them. For a calendar with a different
+account, put the login into its URL: `https://user:password@host/…`.
 
 - **CalDAV**, e.g. Nextcloud
   `https://cloud.example.com/remote.php/dav/calendars/<user>/<calendar>/`,

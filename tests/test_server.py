@@ -804,6 +804,7 @@ class FakeCalDav:
                      f"DTSTART;VALUE=DATE:{tomorrow}\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:x\r\n"
                      f"SUMMARY:Later\r\nDTSTART:{z(now + kv.dt.timedelta(days=5))}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
         self.password = "app-pass"
+        self.auth_seen = []   # (path, Authorization header or None)
 
     def handler(fake):
         class H(BaseHTTPRequestHandler):
@@ -819,6 +820,9 @@ class FakeCalDav:
                 self.wfile.write(data)
 
             def authorized(self):
+                fake.auth_seen.append((self.path, self.headers.get("Authorization")))
+                if self.path == "/public.ics":
+                    return True
                 expected = "Basic " + kv.base64.b64encode(f"me:{fake.password}".encode()).decode()
                 if self.headers.get("Authorization") != expected:
                     self.send(401, "no", "text/plain")
@@ -867,11 +871,39 @@ class CalendarTests(ServerTest):
         self.assertNotIn("Later", tile.split("Groceries")[0])               # only CALDAV_EVENTS=3
         self.assertIn("<b>tomorrow</b> Birthday Cara", tile)                # all-day: no time
 
+    def test_credentials_only_when_asked(self):
+        self.req("/")
+        sent = {path: auth for path, auth in self.cal.auth_seen if auth}
+        self.assertIn("/cal/", sent)                     # asked (401) -> logged in
+        public = [auth for path, auth in self.cal.auth_seen if path == "/public.ics"]
+        self.assertEqual(public, [])                     # not configured in this test
+
     def test_wrong_password(self):
         self.cal.password = "changed"
         _, body, _ = self.req("/")
         self.assertIn('<div class="terr">Calendar', body)
         self.assertIn("CALDAV_USER/CALDAV_PASSWORD", body)
+
+
+class CalendarAuthTests(unittest.TestCase):
+    def test_public_feed_never_gets_password_and_url_credentials(self):
+        cal = FakeCalDav()
+        server = serve(ThreadingHTTPServer(("127.0.0.1", 0), cal.handler()))
+        try:
+            base = f"127.0.0.1:{server.server_port}"
+            cfg = kv.Config({"CALDAV_URL": f"http://{base}/public.ics http://me:app-pass@{base}/cal/",
+                             "CALDAV_USER": "global", "CALDAV_PASSWORD": "secret"})
+            events = kv.Calendar(cfg).upcoming()
+            self.assertTrue(events)
+            self.assertTrue(all(auth is None for path, auth in cal.auth_seen if path == "/public.ics"))
+            self.assertIn(("/cal/", "Basic " + kv.base64.b64encode(b"me:app-pass").decode()), cal.auth_seen)
+            cfg = kv.Config({"CALDAV_URL": f"http://me:wrong@{base}/cal/?x=1"})
+            with self.assertRaises(kv.ApiError) as ctx:
+                kv.Calendar(cfg).upcoming()
+            self.assertNotIn("wrong", str(ctx.exception))   # password never in error messages
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 class KitchenOwlOnlyTests(ServerTest):

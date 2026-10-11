@@ -607,17 +607,32 @@ class Calendar:
         self._cache = (None, 0)
 
     def _request(self, method, url, body=None, headers=None):
+        """Request without credentials first; log in only if the server asks for it (401).
+
+        Credentials: user:password@ in the URL, else CALDAV_USER/CALDAV_PASSWORD. So public
+        .ics links never see a password meant for another server."""
+        parts = urllib.parse.urlsplit(url)
+        user, password = self.cfg.caldav_user, self.cfg.caldav_password
+        if parts.username is not None:
+            user = urllib.parse.unquote(parts.username)
+            password = urllib.parse.unquote(parts.password or "")
+            url = urllib.parse.urlunsplit(parts._replace(netloc=parts.netloc.rpartition("@")[2]))
         headers = dict(headers or {}, **{"User-Agent": "kindle-vikunja"})
-        if self.cfg.caldav_user:
-            auth = f"{self.cfg.caldav_user}:{self.cfg.caldav_password}".encode()
-            headers["Authorization"] = "Basic " + base64.b64encode(auth).decode()
-        req = urllib.request.Request(url, data=body, headers=headers, method=method)
-        with urllib.request.urlopen(req, timeout=self.cfg.timeout, context=self._ctx) as resp:
-            return resp.read().decode("utf-8", "replace")
+        for attempt in range(2):
+            req = urllib.request.Request(url, data=body, headers=headers, method=method)
+            try:
+                with urllib.request.urlopen(req, timeout=self.cfg.timeout, context=self._ctx) as resp:
+                    return resp.read().decode("utf-8", "replace")
+            except urllib.error.HTTPError as e:
+                if e.code != 401 or attempt or not user:
+                    raise
+            headers["Authorization"] = "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
 
     def _fetch(self, url, start, end):
         """iCalendar texts for a URL: a CalDAV calendar-query (with server-side expansion of
         recurring events), or else a plain GET of an .ics file."""
+        parts = urllib.parse.urlsplit(url)
+        shown = urllib.parse.urlunsplit(parts._replace(netloc=parts.netloc.rpartition("@")[2], query=""))
         fmt = "%Y%m%dT%H%M%SZ"
         span = f'start="{start.astimezone(dt.timezone.utc):{fmt}}" end="{end.astimezone(dt.timezone.utc):{fmt}}"'
         query = (
@@ -634,21 +649,21 @@ class Calendar:
             return [el.text or "" for el in root.iter(f"{{{self.CALDAV}}}calendar-data")]
         except urllib.error.HTTPError as e:
             if e.code in (401, 403):
-                raise ApiError(f"Calendar {url}: {e.code} {e.reason} (check CALDAV_USER/CALDAV_PASSWORD)", e.code)
+                raise ApiError(f"Calendar {shown}: {e.code} {e.reason} (check CALDAV_USER/CALDAV_PASSWORD)", e.code)
             if e.code not in (400, 404, 405, 406, 415, 501):
-                raise ApiError(f"Calendar {url}: {e.code} {e.reason}", e.code)
+                raise ApiError(f"Calendar {shown}: {e.code} {e.reason}", e.code)
         except ET.ParseError:
             pass
         except (urllib.error.URLError, OSError, ValueError) as e:
-            raise ApiError(f"Cannot reach calendar {url}: {e}") from None
+            raise ApiError(f"Cannot reach calendar {shown}: {e}") from None
         try:  # not a CalDAV collection: plain iCalendar file
             ics = self._request("GET", url)
         except urllib.error.HTTPError as e:
-            raise ApiError(f"Calendar {url}: {e.code} {e.reason}", e.code)
+            raise ApiError(f"Calendar {shown}: {e.code} {e.reason}", e.code)
         except (urllib.error.URLError, OSError, ValueError) as e:
-            raise ApiError(f"Cannot reach calendar {url}: {e}") from None
+            raise ApiError(f"Cannot reach calendar {shown}: {e}") from None
         if "BEGIN:VCALENDAR" not in ics:
-            raise ApiError(f"Calendar {url}: neither CalDAV nor an iCalendar file")
+            raise ApiError(f"Calendar {shown}: neither CalDAV nor an iCalendar file")
         return [ics]
 
     def upcoming(self, now=None):
