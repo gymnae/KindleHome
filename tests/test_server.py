@@ -348,7 +348,6 @@ class TaskTests(ServerTest):
         status, body, headers = self.req("/p/1/list")
         self.assertEqual(status, 200)
         self.assertTrue(body.startswith('<ul id="tasks">'))
-        self.assertRegex(headers["X-Updated"], r"^\d\d:\d\d$")
 
     def test_toggle_keeps_other_fields(self):
         status, _, _ = self.req("/toggle", {"id": "1", "done": "1", "back": "/p/1"},
@@ -570,7 +569,8 @@ class DashboardTests(ServerTest):
         self.assertIn('"list": "/dash/list"', body)
         status, frag, headers = self.req("/dash/list")
         self.assertTrue(frag.startswith('<a class="tile fit"'))
-        self.assertTrue(headers["X-Today"])
+        self.assertNotIn('id="hd"', body)                  # no header: the Kindle shows the time
+        self.assertIn('<div class="dnav"><a href="/">Refresh</a>', body)
 
     def test_pages_link_home(self):
         self.assertIn('<a href="/">Home</a>', self.req("/p/1")[1])

@@ -1226,6 +1226,9 @@ a{color:#000}
 #hd .nav{display:table-cell;text-align:right;vertical-align:bottom;font-size:.7em;white-space:nowrap}
 #hd .nav a{display:inline-block;padding:10px 0 4px 16px}
 #status{font-size:.7em;min-height:1.2em}
+body.dash #status{min-height:0}
+.dnav{text-align:right;font-size:.7em}
+.dnav a{display:inline-block;padding:6px 0 2px 20px}
 #pager{position:fixed;bottom:10px;left:50%;width:150px;margin-left:-75px;text-align:center}
 #pager a{position:relative;display:inline-block;width:62px;height:50px;margin:0 4px;border:3px solid #000;background:#fff;vertical-align:top}
 .tri{position:absolute;left:50%;top:50%;width:0;height:0;margin-left:-13px;border-left:13px solid transparent;border-right:13px solid transparent}
@@ -1384,8 +1387,6 @@ JS = r"""
         fitDashboard();
         updatePager();
       }
-      $("upd").textContent = r.getResponseHeader("X-Updated") || "";
-      if ($("today") && r.getResponseHeader("X-Today")) $("today").textContent = r.getResponseHeader("X-Today");
       status("");
     });
   }
@@ -1824,7 +1825,7 @@ class Renderer:
         banner = f'<div class="banner">{esc(error)}</div>' if error else ""
         body = (
             f'<div id="hd"><h1>{esc(title)}</h1><div class="nav">'
-            f'<span id="upd">{dt.datetime.now().strftime("%H:%M")}</span>{self._home_link()}'
+            f'{self._home_link()}'
             f'<a href="/p/{project_id}">{esc(t["refresh"])}</a>'
             f'<a href="/projects">{esc(t["projects"])}</a>{self._exit_link()}</div></div>'
             f'{banner}<form id="add" method="post" action="/p/{project_id}/add">'
@@ -1872,10 +1873,6 @@ class Renderer:
                            self._script(list=None, home=home if home_after > 0 else None, homeAfter=home_after))
 
     # -- dashboard -----------------------------------------------------------
-
-    def today(self, now=None):
-        now = now or dt.datetime.now()
-        return f'{self.t["weekdays"][now.weekday()]} {now.strftime("%d.%m.")}'
 
     def _tile(self, href, title, count="", lines=(), more=0, error=None, note="", total=None):
         """A dashboard tile. With total (list tiles), the page fits it to the screen (fitDashboard)."""
@@ -1933,11 +1930,10 @@ class Renderer:
         return self._tile(href, title, error=str(error))
 
     def dashboard_page(self, tiles_html):
+        # no header: the Kindle's status bar already shows the time, all height goes to the tiles
         body = (
-            f'<div id="hd"><h1 id="today">{esc(self.today())}</h1><div class="nav">'
-            f'<span id="upd">{dt.datetime.now().strftime("%H:%M")}</span>'
-            f'<a href="/">{esc(self.t["refresh"])}</a>{self._exit_link()}</div></div>'
             f'<div id="status"></div><div id="list">{tiles_html}</div>'
+            f'<div class="dnav"><a href="/">{esc(self.t["refresh"])}</a>{self._exit_link()}</div>'
         )
         return self.layout(self.t["home"], body, self._script(list="/dash/list", home=None, dash=True,
                                                               more=self.t["more"]), body_class="dash")
@@ -2006,7 +2002,7 @@ class Renderer:
         title = lst.get("name") or "KitchenOwl"
         body = (
             f'<div id="hd"><h1>{esc(title)}</h1><div class="nav">'
-            f'<span id="upd">{dt.datetime.now().strftime("%H:%M")}</span>{self._home_link()}'
+            f'{self._home_link()}'
             f'<a href="/s/{lid}">{esc(t["refresh"])}</a>'
             + (f'<a href="/shop/lists">{esc(t["lists"])}</a>' if lst.get("list_count", 1) > 1 else "")
             + f'{self._exit_link()}</div></div>'
@@ -2149,8 +2145,7 @@ class Handler(BaseHTTPRequestHandler):
             dp = self.cfg.default_project
             return self._redirect(f"/p/{dp}" if dp else "/projects")
         if method == "GET" and path == "/dash/list":
-            return self._send(200, self._tiles(), headers={
-                "X-Updated": dt.datetime.now().strftime("%H:%M"), "X-Today": self.render.today()})
+            return self._send(200, self._tiles())
         m_emoji = re.fullmatch(r"/emoji/([0-9a-f]{2,8}(?:-[0-9a-f]{2,8}){0,9})\.png", path)
         if m_emoji:
             img = self.emoji.get(m_emoji.group(1))
@@ -2177,7 +2172,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._task_page(m.group(1))
         if method == "GET" and m and m.group(2) == "/list":
             html_ = self.render.task_list(m.group(1), self.api.open_tasks(m.group(1)))
-            return self._send(200, html_, headers={"X-Updated": dt.datetime.now().strftime("%H:%M")})
+            return self._send(200, html_)
         m_task = re.fullmatch(r"/t/(\d+)", path)
         if method == "GET" and m_task:
             return self._detail_page(int(m_task.group(1)))
@@ -2236,8 +2231,7 @@ class Handler(BaseHTTPRequestHandler):
             lst = self.ko.shopping_list(lid)
             return self._send(200, self.render.shop_page(lst, self.render.shop_list(lst)))
         if method == "GET" and action == "/list":
-            return self._send(200, self.render.shop_list(self.ko.shopping_list(lid)),
-                              headers={"X-Updated": dt.datetime.now().strftime("%H:%M")})
+            return self._send(200, self.render.shop_list(self.ko.shopping_list(lid)))
         if method == "GET" and action == "/suggest":
             q = " ".join(self._query.get("q", [""])[0].split())[:128]
             return self._send(200, self.render.suggestions(lid, self.ko.search(q) if len(q) >= 2 else []))
