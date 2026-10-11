@@ -38,6 +38,8 @@ except ImportError:  # Python < 3.9
     ZoneInfo = None
 
 NULL_DATE_PREFIX = "0001-01-01"  # Vikunja's "no date"
+NULL_DATE = NULL_DATE_PREFIX + "T00:00:00Z"
+KEEP = object()  # "leave unchanged"
 MAX_DEPTH = 4  # subtask nesting shown on screen
 PAGE_LIMIT = 50  # safety net for pagination loops
 
@@ -52,7 +54,7 @@ STRINGS = {
         "pick": "Choose a project",
         "back": "Back", "subtasks": "Subtasks", "parent": "Part of",
         "new_subtask": "New subtask…",
-        "weekend": "Weekend", "calendar": "Upcoming", "no_events": "No upcoming events.",
+        "weekend": "Weekend", "no_date": "No date", "calendar": "Upcoming", "no_events": "No upcoming events.",
         "todo_title": "ToDo", "shop_title": "Shopping List", "lists": "Lists", "pick_list": "Choose a list",
         "default": "default",
         "home": "Home", "recent": "Recently bought", "new_item": "Add item…", "other": "Other",
@@ -69,7 +71,7 @@ STRINGS = {
         "pick": "Projekt wählen",
         "back": "Zurück", "subtasks": "Unteraufgaben", "parent": "Teil von",
         "new_subtask": "Neue Unteraufgabe…",
-        "weekend": "Wochenende", "calendar": "Termine", "no_events": "Keine Termine.",
+        "weekend": "Wochenende", "no_date": "Kein Datum", "calendar": "Termine", "no_events": "Keine Termine.",
         "todo_title": "ToDo", "shop_title": "Einkaufsliste", "lists": "Listen", "pick_list": "Liste wählen",
         "default": "Standard",
         "home": "Start", "recent": "Zuletzt gekauft", "new_item": "Artikel hinzufügen…", "other": "Sonstiges",
@@ -303,7 +305,26 @@ class Vikunja(JsonApi):
         self._change_description(task_id, lambda d: append_checklist_item(d, text))
 
     def rename(self, task_id, title):
-        self._update(task_id, lambda task: task.__setitem__("title", title))
+        self.edit(task_id, title)
+
+    def edit(self, task_id, title, due=KEEP, assignees=None):
+        """Rename a task; optionally set (or clear, due=None) its due date and replace its assignees."""
+        old = []
+
+        def apply(task):
+            old.extend(u["id"] for u in task.get("assignees") or [] if u.get("id"))
+            task["title"] = title
+            if due is not KEEP:
+                task["due_date"] = due.isoformat() if due else NULL_DATE
+        self._update(task_id, apply)
+        if assignees is None:
+            return
+        for user_id in assignees:
+            if user_id not in old:
+                self.request("PUT", f"/tasks/{task_id}/assignees", body={"user_id": user_id})
+        for user_id in old:
+            if user_id not in assignees:
+                self.request("DELETE", f"/tasks/{task_id}/assignees/{user_id}")
 
     def set_done(self, task_id, done):
         self._update(task_id, lambda task: task.__setitem__("done", bool(done)))
@@ -1318,6 +1339,9 @@ h2.cat{font-size:1.05em;margin:22px 0 4px}
 .ren input{width:100%;font:inherit;padding:6px;border:3px solid #000;border-radius:0;-webkit-appearance:none;background:#fff;color:#000}
 .ren button{font-size:.8em;margin:6px 8px 0 0;padding:8px 14px;border:3px solid #000;border-radius:0;background:#000;color:#fff;-webkit-appearance:none}
 .ren button.cancel{background:#fff;color:#000}
+.echips{margin:10px 0 0;font-size:.8em;font-weight:normal}
+.ren .chip{margin:0 6px 6px 0;padding:6px 12px;border:2px solid #000;border-radius:1em;background:#fff;color:#000}
+.ren .chip.on{background:#000;color:#fff}
 .ckf .box{width:1.5em;height:1.5em;margin:0 .5em 0 0;padding:0;border:3px solid #000;border-radius:0;background:#fff;-webkit-appearance:none;vertical-align:middle}
 .desc pre{white-space:pre-wrap;border:1px solid #000;padding:4px}
 .desc blockquote{margin:0 0 .5em;padding-left:8px;border-left:4px solid #000}
@@ -1337,6 +1361,7 @@ JS = r"""
 
   function now() { return new Date().getTime(); }
   function $(id) { return document.getElementById(id); }
+  function formOf(el) { while (el && el.tagName !== "FORM") el = el.parentNode; return el; }
   function hasCls(el, c) { return el && el.className && (" " + el.className + " ").indexOf(" " + c + " ") >= 0; }
   function closest(el, c) { while (el && el !== document) { if (hasCls(el, c)) return el; el = el.parentNode; } return null; }
   function status(msg, isErr) { var s = $("status"); s.textContent = msg || ""; s.className = isErr ? "err" : ""; }
@@ -1417,12 +1442,33 @@ JS = r"""
     inp.value = cur === ph ? "" : cur;
     save.type = "submit"; save.textContent = CFG.save;
     cancel.type = "button"; cancel.className = "cancel"; cancel.textContent = CFG.cancel;
-    f.appendChild(inp); f.appendChild(save); f.appendChild(cancel);
-    editing = { el: el, html: el.innerHTML, text: inp.value, ph: ph };
+    f.appendChild(inp);
+    // task title on the detail page: due date and assignee chips as well (see detail_page)
+    var due = el.getAttribute("data-due"), who = el.getAttribute("data-who"), tpl = $("editchips");
+    if (who !== null && tpl) {
+      var chips = tpl.cloneNode(true), all = chips.getElementsByTagName("button");
+      chips.removeAttribute("id");
+      chips.style.display = "block";
+      for (var i = 0; i < all.length; i++) {
+        var v = all[i].getAttribute("data-v");
+        setCls(all[i], "on", all[i].getAttribute("data-kind") === "due" ? v === due : ("," + who + ",").indexOf("," + v + ",") >= 0);
+      }
+      f.appendChild(hiddenInput("due", due));
+      f.appendChild(hiddenInput("who", who));
+      f.appendChild(chips);
+    }
+    f.appendChild(save); f.appendChild(cancel);
+    editing = { el: el, html: el.innerHTML, text: inp.value, ph: ph, due: due, who: who };
     el.innerHTML = "";
     el.appendChild(f);
     inp.focus();
   }
+  function hiddenInput(name, value) {
+    var h = document.createElement("input");
+    h.type = "hidden"; h.name = name; h.value = value;
+    return h;
+  }
+  function sortedIds(s) { return s ? s.split(",").sort().join(",") : ""; }
   // Text of an element with emoji pictures turned back into the emoji (their alt text).
   function textOf(el) {
     var out = "", n;
@@ -1441,12 +1487,19 @@ JS = r"""
   }
   function saveEdit(f) {
     var value = f.elements["title"].value.replace(/\s+/g, " ").replace(/^ | $/g, "");
-    if ((!value && editing.ph === null) || value === editing.text) { stopEdit(null); return; }
+    var more = "";   // changed chips (only sent when changed; due "" = deselected = unchanged)
+    if (f.elements["who"]) {
+      var due = f.elements["due"].value, who = sortedIds(f.elements["who"].value);
+      if (due && due !== editing.due) more += "&due=" + encodeURIComponent(due);
+      if (who !== sortedIds(editing.who)) more += "&who=" + encodeURIComponent(who);
+    }
+    if ((!value && editing.ph === null) || (value === editing.text && !more)) { stopEdit(null); return; }
     var el = editing.el, i = el.getAttribute("data-i"), ph = editing.ph;
-    var body = "title=" + encodeURIComponent(value) + (i !== null ? "&i=" + encodeURIComponent(i) : "");
+    var body = "title=" + encodeURIComponent(value) + (i !== null ? "&i=" + encodeURIComponent(i) : "") + more;
     status("\u2026");
     xhr("POST", el.getAttribute("data-url"), body, function (ok, r) {
       if (!ok) { status(errText(r), true); return; }
+      if (more) { location.reload(); return; }   // shows the new due date / assignees
       status("");
       stopEdit(value || ph);
       if (hasCls(el, "title") && closest(el, "head")) document.title = value;
@@ -1468,7 +1521,7 @@ JS = r"""
     if (kind === "due") for (var i = 0; i < all.length; i++) setCls(all[i], "on", false);
     setCls(chip, "on", on);
     for (var j = 0; j < all.length; j++) if (hasCls(all[j], "on")) picked.push(all[j].getAttribute("data-v"));
-    $(kind).value = picked.join(",");
+    formOf(chip).elements[kind].value = picked.join(",");
   }
   if ($("chips")) {
     $("title").addEventListener("focus", function () { $("chips").style.display = "block"; }, false);
@@ -1808,17 +1861,30 @@ class Renderer:
             return f'<p class="empty">{esc(self.t["empty"])}</p>'
         return '<ul id="tasks">' + "".join(items) + "</ul>"
 
-    def _chips(self, users):
+    def _chip_rows(self, users, none=False):
         t = self.t
+        kinds = [("today", t["today"].capitalize()), ("tomorrow", t["tomorrow"].capitalize()),
+                 ("weekend", t["weekend"])] + ([("none", t["no_date"])] if none else [])
         due = "".join(f'<button type="button" class="chip" data-kind="due" data-v="{k}">{esc(label)}</button>'
-                      for k, label in (("today", t["today"].capitalize()), ("tomorrow", t["tomorrow"].capitalize()),
-                                       ("weekend", t["weekend"])))
+                      for k, label in kinds)
         who = "".join(f'<button type="button" class="chip" data-kind="who" data-v="{u["id"]}">'
                       f'{esc(_first_name(u))}</button>' for u in users)
+        return f'<div class="chiprow">{due}</div>' + (f'<div class="chiprow">{who}</div>' if who else "")
+
+    def _chips(self, users):
         return ('<input type="hidden" id="due" name="due" value="">'
                 '<input type="hidden" id="who" name="who" value="">'
-                f'<div id="chips"><div class="chiprow">{due}</div>'
-                + (f'<div class="chiprow">{who}</div>' if who else "") + "</div>")
+                f'<div id="chips">{self._chip_rows(users)}</div>')
+
+    def _due_kind(self, task):
+        """The due date chip matching a task's due date: "none" without one, "" for any other date."""
+        d = parse_date(task.get("due_date"))
+        if not d:
+            return "none"
+        for kind in ("today", "tomorrow", "weekend"):
+            if quick_due(kind, self.cfg.quick_due_time) == d:
+                return kind
+        return ""
 
     def task_page(self, project_id, title, list_html, error=None, users=()):
         t = self.t
@@ -1837,8 +1903,10 @@ class Renderer:
         )
         return self.layout(title, body, self._script(list=f"/p/{project_id}/list", **self._home_return()))
 
-    def detail_page(self, task, project_id, project_title, now=None):
-        """One task: its description, parent and (tickable) subtasks."""
+    def detail_page(self, task, project_id, project_title, now=None, users=()):
+        """One task: its description, parent and (tickable) subtasks.
+
+        Renaming the task (tap its title) also offers due date and assignee chips (from users)."""
         t, now = self.t, now or dt.datetime.now().astimezone()
         tid = task["id"]
         home, here = f"/p/{project_id}", f"/t/{tid}?p={project_id}"
@@ -1850,6 +1918,11 @@ class Renderer:
         parents = " ".join(f'<a href="/t/{p["id"]}?p={project_id}">{esc(p.get("title"))}</a>'
                            for p in _rel(task, "parenttask") if "id" in p)
         desc = description_html(task.get("description"), check_form=(tid, here))
+        people = list(users)
+        for a in task.get("assignees") or []:  # keep assignees who are no longer in the project
+            if a.get("id") and all(u["id"] != a["id"] for u in people):
+                people.append(a)
+        who = ",".join(str(a["id"]) for a in task.get("assignees") or [] if a.get("id"))
         body = (
             f'<div id="hd"><h1><a class="open" href="{home}">\u2039 {esc(project_title or t["back"])}</a></h1>'
             f'<div class="nav"><a href="{esc(here)}">{esc(t["refresh"])}</a>{self._exit_link()}</div></div>'
@@ -1857,8 +1930,10 @@ class Renderer:
             + (f'<div class="parent">{esc(t["parent"])}: {parents}</div>' if parents else "")
             + f'<div class="task head{" done" if task.get("done") else ""}"><div class="row">'
             f'{self._toggle_form(task, here)}<div class="body">'
-            f'<span class="title edit"{_edit_attrs(f"/t/{tid}/rename")}>{esc(task.get("title"))}</span>'
+            f'<span class="title edit"{_edit_attrs(f"/t/{tid}/rename")}'
+            f' data-due="{self._due_kind(task)}" data-who="{who}">{esc(task.get("title"))}</span>'
             f'{self._meta(task, {tid: subs}, now)}</div></div></div>'
+            f'<div id="editchips" class="echips" style="display:none">{self._chip_rows(people, none=True)}</div>'
             + (f'<div class="desc">{desc}</div>' if desc else "")
             + (f'<h2 class="sec">{esc(t["subtasks"])}</h2><ul>{rows}</ul>' if rows else "")
             # new subtasks become "- [ ]" checklist items in the description, like in Vikunja's editor
@@ -2287,7 +2362,12 @@ class Handler(BaseHTTPRequestHandler):
             project_title = self.api.project(project_id).get("title")
         except VikunjaError:
             project_title = None
-        self._send(200, self.render.detail_page(task, project_id, project_title))
+        try:
+            users = self.api.project_users(project_id)
+        except ApiError as e:
+            self.log_message("%s", e)
+            users = []
+        self._send(200, self.render.detail_page(task, project_id, project_title, users=users))
 
     def _check(self):
         form = self._form()
@@ -2304,7 +2384,19 @@ class Handler(BaseHTTPRequestHandler):
         if not text:
             return self._send(400, "empty text", "text/plain")
         if what == "rename":
-            self.api.rename(task_id, text)
+            due, who = KEEP, None
+            if form.get("due") == "none":
+                due = None
+            elif form.get("due"):
+                due = quick_due(form["due"], self.cfg.quick_due_time)
+                if due is None:
+                    return self._send(400, "bad due date", "text/plain")
+            if "who" in form:
+                who = [w for w in form["who"].split(",") if w]
+                if not all(w.isdigit() for w in who):
+                    return self._send(400, "bad assignee", "text/plain")
+                who = [int(w) for w in who]
+            self.api.edit(task_id, text, due=due, assignees=who)
         elif what == "item":
             self.api.add_check(task_id, text)
         else:

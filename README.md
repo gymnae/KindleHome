@@ -69,7 +69,7 @@ In Vikunja go to *Settings → API Tokens → Create a token* and grant at least
 | projects         | read_all, read_one                          |
 | projects / views | read_all, (views tasks) read_all            |
 | tasks            | read_all, read_one, create, update          |
-| tasks_assignees  | create (assignee chips when adding a task)  |
+| tasks_assignees  | create, delete (assignee chips)             |
 | projects_users, projects_teams, teams | read_all (people chips; without them only the owner is offered) |
 
 The permission names in the UI differ a bit between versions. If anything
@@ -210,6 +210,11 @@ After a reboot, run *Start todo display* again (it is not started automatically)
 - On a detail page, text with a dotted underline can be edited: tap the
   title, a subtask or a checklist item, change it, then tap *Save*. Open a
   subtask with the `›` arrow, and tick checklist items with their box.
+- Tapping the task's title on its detail page also shows the chips: the
+  current due date and assignees are selected, and you can change them before
+  tapping *Save*. *No date* removes the due date. If the due date is not one of
+  the chips, it stays as it is unless you pick one. To change a subtask's due
+  date or assignees, open the subtask first.
 - Auto-refresh pauses while you type or right after you tapped something.
 - *Refresh* in the header reloads the whole page, which also clears e-ink
   ghosting. The page does a full reload on its own every 6 hours as well.
@@ -221,6 +226,11 @@ After a reboot, run *Start todo display* again (it is not started automatically)
   fullscreen app* removes the entry again.
   - Use the page's *Exit* link (only shown in the app) to get back to the
     Kindle home screen, then KUAL → *Stop* to end the display.
+  - If the app closes without *Exit* (a crash), the watchdog opens it again
+    within a minute. It saves what the system logged at that moment to
+    `kindlehome-crash.txt` on the Kindle drive, and *Collect diagnostics*
+    includes it too. Once an hour the log also records the battery level and
+    memory use.
   - If the app stays blank, set `KV_APP_MODE=top` in `config.sh` and start again.
   - If it does not work at all, use the normal *Start todo display* (browser).
   - `KV_HIDE_BARS=1` hides the browser's top bar instead, but on firmware

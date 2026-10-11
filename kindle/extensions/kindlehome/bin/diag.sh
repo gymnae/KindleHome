@@ -50,6 +50,13 @@ log "collecting diagnostics into $OUT"
     for f in /mnt/us/extensions/komic/bin/resource/Scripts/*.sh; do
         [ -f "$f" ] && { echo "--- $f"; cat "$f" | head -n 80; }
     done
+    echo "=== status";        status_line; echo "active app: $(active_app), app state: $(app_state)"
+    echo "=== memory";        cat /proc/meminfo 2>&1 | head -n 6
+    echo "=== syslog (app, memory)"
+    grep -i -e mesquite -e appmgr -e oom -e "out of memory" -e killed -e segfault -e kindlehome \
+        /var/log/messages 2>/dev/null | tail -n 150
+    echo "=== dmesg";         dmesg 2>&1 | tail -n 60
+    echo "=== last crash report"; cat "$CRASHFILE" 2>&1 | head -n 400
     echo "=== KindleHome log"; tail -n 200 "$LOG" 2>&1
 } > "$OUT" 2>&1
 log "diagnostics done"

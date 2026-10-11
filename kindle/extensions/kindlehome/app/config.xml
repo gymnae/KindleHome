@@ -30,6 +30,11 @@
         <kindle:asset key="enableCaching" value="false"/>
     </kindle:network>
 
+    <!-- localStorage in a known place: the watchdog reads it (bin/common.sh app_state) -->
+    <kindle:resources>
+        <kindle:asset key="LocalStoragePath" value="/mnt/us/extensions/kindlehome/app/storage"/>
+    </kindle:resources>
+
     <feature name="http://kindle.amazon.com/apis" required="true">
         <param name="appmgr" value="yes"/>
         <param name="chrome" value="yes"/>

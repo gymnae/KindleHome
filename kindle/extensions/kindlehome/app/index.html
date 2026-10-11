@@ -17,9 +17,19 @@ iframe { display: block; width: 100%; height: 100%; border: 0; }
 (function () {
   var msg = document.getElementById("msg");
 
+  // For the watchdog: "r" = running, "x" = left via Exit. If the app disappears while
+  // this says "r", it crashed and the watchdog opens it again.
+  function setState(s) {
+    try { localStorage.setItem("kv-state", s); } catch (e) {}
+  }
+
   function home() {
-    try { kindle.appmgr.start("com.lab126.booklet.home"); }
-    catch (e) { msg.textContent = "Exit failed: " + e; }
+    setState("x");
+    // give WebKit time to write localStorage to disk before the app is unloaded
+    setTimeout(function () {
+      try { kindle.appmgr.start("com.lab126.booklet.home"); }
+      catch (e) { msg.textContent = "Exit failed: " + e; }
+    }, 1500);
   }
 
   // The todo page (another origin) asks us to exit via postMessage.
@@ -32,9 +42,11 @@ iframe { display: block; width: 100%; height: 100%; border: 0; }
     return;
   }
   if (window.KV_APP_MODE === "top") {   // fallback if frames misbehave
+    setState("x");   // the page's own Exit can't tell us, so no automatic reopening here
     location.replace(window.KV_URL);
     return;
   }
+  setState("r");
   var frame = document.createElement("iframe");
   frame.onload = function () { if (msg.parentNode) msg.parentNode.removeChild(msg); };
   frame.src = window.KV_URL;

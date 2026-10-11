@@ -2,3 +2,4 @@
 __pycache__/
 *.pyc
 kindle/extensions/kindlehome/config.sh
+kindle/extensions/kindlehome/app/storage/

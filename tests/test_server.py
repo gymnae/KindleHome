@@ -39,6 +39,7 @@ class FakeVikunja:
         self.subtasks = {2: [3, 4]}  # parent -> children
         self.next_id = 6
         self.assigned = []           # (task id, user id)
+        self.unassigned = []         # (task id, user id)
 
     def with_relations(self, task):
         t = dict(task)
@@ -142,6 +143,15 @@ class FakeVikunja:
                     assert data["relation_kind"] == "subtask"
                     fake.subtasks.setdefault(int(m.group(1)), []).append(data["other_task_id"])
                     return self.reply(201, data)
+                self.reply(404, {"message": "not found"})
+
+            def do_DELETE(self):
+                if not self.check_auth():
+                    return
+                m = re.fullmatch(r"/api/v1/tasks/(\d+)/assignees/(\d+)", self.path)
+                if m:
+                    fake.unassigned.append((int(m.group(1)), int(m.group(2))))
+                    return self.reply(200, {})
                 self.reply(404, {"message": "not found"})
 
         return H
@@ -404,7 +414,7 @@ class DetailTests(ServerTest):
         status, body, _ = self.req("/t/2?p=1")
         self.assertEqual(status, 200)
         self.assertIn("\u2039 Home</a>", body)
-        self.assertIn('<span class="title edit" data-url="/t/2/rename">Clean &lt;kitchen&gt;</span>', body)
+        self.assertIn('<span class="title edit" data-url="/t/2/rename" data-due="none" data-who="">Clean &lt;kitchen&gt;</span>', body)
         # description is sanitized
         self.assertIn("<p>Use <strong>soap</strong></p>", body)
         self.assertNotIn("alert(1)", body)
@@ -537,6 +547,43 @@ class QuickAddTests(ServerTest):
         _, body, _ = self.req("/p/1/list")
         self.assertIn(">tomorrow</span>", body)          # quick-add time not shown
         self.assertEqual(self.req("/p/1/add", {"title": "x", "who": "1;drop"}, self.ajax)[0], 400)
+
+    def test_detail_page_offers_chips_for_editing(self):
+        self.fake.tasks[1]["assignees"].append({"id": 8, "username": "gone", "name": "Gone Away"})
+        _, body, _ = self.req("/t/1?p=1")
+        self.assertIn('data-url="/t/1/rename" data-due="" data-who="1,2,8">Buy milk</span>', body)
+        chips = body[body.index('<div id="editchips"'):]
+        self.assertIn('data-kind="due" data-v="none">No date</button>', chips)
+        people = re.findall(r'data-kind="who" data-v="(\d+)">([^<]*)<', chips)
+        self.assertEqual(people, [("1", "Anna"), ("2", "Ben"), ("3", "cara"), ("8", "Gone")])
+        _, body, _ = self.req("/t/3?p=1")   # no due date, nobody assigned
+        self.assertIn('data-url="/t/3/rename" data-due="none" data-who="">', body)
+        self.assertIn('<span class="title edit" data-url="/t/4/rename">Dishes</span>', self.req("/t/2?p=1")[1])
+
+    def test_edit_due_and_assignees(self):
+        status, _, _ = self.req("/t/1/rename", {"title": "Buy milk", "due": "today", "who": "2,3"}, self.ajax)
+        self.assertEqual(status, 204)
+        task = self.fake.tasks[1]
+        self.assertEqual(kv.parse_date(task["due_date"]).date(), kv.dt.datetime.now().astimezone().date())
+        self.assertEqual(task["description"], "keep me")
+        self.assertEqual(self.fake.assigned, [(1, 3)])
+        self.assertEqual(self.fake.unassigned, [(1, 1)])
+        self.assertEqual(self.req("/t/1?p=1")[1].count('data-due="today"'), 1)
+
+    def test_edit_clears_due_and_assignees(self):
+        self.req("/t/1/rename", {"title": "Buy milk", "due": "none", "who": ""}, self.ajax)
+        self.assertIsNone(kv.parse_date(self.fake.tasks[1]["due_date"]))
+        self.assertEqual(self.fake.unassigned, [(1, 1), (1, 2)])
+
+    def test_rename_keeps_due_and_assignees(self):
+        self.req("/t/1/rename", {"title": "Buy oat milk"}, self.ajax)
+        self.assertEqual(self.fake.tasks[1]["due_date"], "2020-01-01T10:00:00Z")
+        self.assertEqual((self.fake.assigned, self.fake.unassigned), ([], []))
+
+    def test_edit_rejects_bad_chips(self):
+        self.assertEqual(self.req("/t/1/rename", {"title": "x", "due": "someday"}, self.ajax)[0], 400)
+        self.assertEqual(self.req("/t/1/rename", {"title": "x", "who": "1;2"}, self.ajax)[0], 400)
+        self.assertEqual(self.fake.tasks[1]["title"], "Buy milk")
 
     def test_quick_due(self):
         at = kv.dt.time(23, 59)
