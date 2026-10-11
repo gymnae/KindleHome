@@ -1,7 +1,7 @@
 #!/bin/sh
 # Keep the Kindle awake and show the todo page.
 # Usage: start.sh [browser|fullscreen]   (default: browser)
-. /mnt/us/extensions/vikunja/bin/common.sh
+. /mnt/us/extensions/kindlehome/bin/common.sh
 
 MODE="${1:-browser}"
 log "start.sh $MODE"

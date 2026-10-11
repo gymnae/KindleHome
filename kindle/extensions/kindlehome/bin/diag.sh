@@ -1,9 +1,9 @@
 #!/bin/sh
 # Collects read-only system info into a file visible over USB:
-#   <Kindle drive>/vikunja-diag.txt
-. /mnt/us/extensions/vikunja/bin/common.sh
+#   <Kindle drive>/kindlehome-diag.txt
+. /mnt/us/extensions/kindlehome/bin/common.sh
 
-OUT=/mnt/us/vikunja-diag.txt
+OUT=/mnt/us/kindlehome-diag.txt
 log "collecting diagnostics into $OUT"
 {
     echo "=== date";            date
@@ -50,6 +50,6 @@ log "collecting diagnostics into $OUT"
     for f in /mnt/us/extensions/komic/bin/resource/Scripts/*.sh; do
         [ -f "$f" ] && { echo "--- $f"; cat "$f" | head -n 80; }
     done
-    echo "=== kindle-vikunja log"; tail -n 200 "$LOG" 2>&1
+    echo "=== KindleHome log"; tail -n 200 "$LOG" 2>&1
 } > "$OUT" 2>&1
 log "diagnostics done"

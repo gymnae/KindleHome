@@ -1,0 +1,21 @@
+# Alternative to Docker: copy the repo to /opt/kindlehome, put your settings
+# in /opt/kindlehome/.env, then:
+#   sudo cp deploy/kindlehome.service /etc/systemd/system/
+#   sudo systemctl enable --now kindlehome
+[Unit]
+Description=Kindle e-ink frontend for Vikunja
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/opt/kindlehome/.env
+ExecStart=/usr/bin/python3 -u /opt/kindlehome/server/kindlehome.py
+Restart=always
+RestartSec=5
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

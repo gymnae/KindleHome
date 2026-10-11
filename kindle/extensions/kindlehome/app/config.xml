@@ -3,12 +3,12 @@
      and e.g. Komic). Registered and started by bin/start.sh fullscreen. -->
 <widget xmlns="http://www.w3.org/ns/widgets"
         xmlns:kindle="http://kindle.amazon.com/ns/widget-extensions"
-    id="com.kindlevikunja.kiosk"
+    id="com.kindlehome.kiosk"
     version="1.0"
     viewmodes="application">
 
-    <name>Vikunja Todo</name>
-    <description>Vikunja todo list display</description>
+    <name>KindleHome</name>
+    <description>Household display: todo, shopping, calendar</description>
     <content src="index.html"/>
 
     <kindle:gestures>

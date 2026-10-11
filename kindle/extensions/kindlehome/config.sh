@@ -1,6 +1,6 @@
-# Settings for the Vikunja todo display. Edit, then run "Start todo display" from KUAL.
+# Settings for the KindleHome display. Edit, then run "Start todo display" from KUAL.
 
-# Page to show: your kindle-vikunja server (plain http on your LAN).
+# Page to show: your KindleHome server (plain http on your LAN).
 # "/" shows the dashboard (if enabled on the server), /p/<id> a Vikunja project,
 # /shop the KitchenOwl shopping list. If ACCESS_KEY is set on the server, append ?key=<ACCESS_KEY>
 # (only needed once, a cookie remembers it).

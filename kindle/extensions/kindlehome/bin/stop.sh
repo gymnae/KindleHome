@@ -1,6 +1,6 @@
 #!/bin/sh
 # Back to normal Kindle behaviour.
-. /mnt/us/extensions/vikunja/bin/common.sh
+. /mnt/us/extensions/kindlehome/bin/common.sh
 
 stop_watchdog
 stop_light

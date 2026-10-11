@@ -2,7 +2,7 @@
 # Touch-controlled front light (started by start.sh when KV_LIGHT_AUTO=1):
 # KV_LIGHT_ON when the screen is touched, KV_LIGHT_OFF after KV_LIGHT_TIMEOUT seconds without touch.
 # It only reads touch events (alongside the Kindle's own software), so taps work as usual.
-. /mnt/us/extensions/vikunja/bin/common.sh
+. /mnt/us/extensions/kindlehome/bin/common.sh
 
 trap '' HUP
 DEV="${KV_TOUCH_DEV:-$(find_touch_dev)}"

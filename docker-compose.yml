@@ -1,7 +1,7 @@
 services:
-  kindle-vikunja:
+  kindlehome:
     build: .
-    container_name: kindle-vikunja
+    container_name: kindlehome
     restart: unless-stopped
     env_file: .env
     ports:

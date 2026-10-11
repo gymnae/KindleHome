@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-kindle-vikunja: a tiny, dependency-free web frontend that shows one Vikunja
-project as an e-ink friendly todo list.
+KindleHome: a tiny, dependency-free web server that turns a jailbroken Kindle into an
+e-ink household display: Vikunja todo lists, a KitchenOwl shopping list and upcoming
+calendar events, with a dashboard.
 
 Built for the experimental browser of a jailbroken Kindle, but works in any
 browser. The Kindle never talks to Vikunja directly: this server holds the API
@@ -627,7 +628,7 @@ class Calendar:
             user = urllib.parse.unquote(parts.username)
             password = urllib.parse.unquote(parts.password or "")
             url = urllib.parse.urlunsplit(parts._replace(netloc=parts.netloc.rpartition("@")[2]))
-        headers = dict(headers or {}, **{"User-Agent": "kindle-vikunja"})
+        headers = dict(headers or {}, **{"User-Agent": "kindlehome"})
         for attempt in range(2):
             req = urllib.request.Request(url, data=body, headers=headers, method=method)
             try:
@@ -793,7 +794,7 @@ class EmojiCache:
         if hit is not None and (hit[0] is not None or time.time() - hit[1] < 1800):
             return hit[0]
         try:
-            req = urllib.request.Request(self.cfg.emoji_url.format(code=code), headers={"User-Agent": "kindle-vikunja"})
+            req = urllib.request.Request(self.cfg.emoji_url.format(code=code), headers={"User-Agent": "kindlehome"})
             with urllib.request.urlopen(req, timeout=self.cfg.timeout) as resp:
                 data = resp.read()
         except Exception as e:  # noqa: BLE001 - emoji are decoration only
@@ -818,7 +819,7 @@ class IconFont:
         self._ko_ctx = None if cfg.ko_verify_tls else ssl._create_unverified_context()
 
     def _get(self, url, ctx=None):
-        req = urllib.request.Request(url, headers={"User-Agent": "kindle-vikunja"})
+        req = urllib.request.Request(url, headers={"User-Agent": "kindlehome"})
         with urllib.request.urlopen(req, timeout=self.cfg.timeout, context=ctx) as resp:
             return resp.read()
 
@@ -1547,7 +1548,7 @@ JS = r"""
     setInterval(checkSugg, 500);
   }
 
-  // Kiosk app (kindle/extensions/vikunja/app): the page runs in a frame there,
+  // Kiosk app (kindle/extensions/kindlehome/app): the page runs in a frame there,
   // and only the app itself may talk to the Kindle, so ask it to exit.
   var exitLink = $("exit"), framed = false;
   try { framed = window.parent !== window; } catch (e) { framed = true; }
@@ -1959,7 +1960,7 @@ class Renderer:
 # --------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "kindle-vikunja"
+    server_version = "KindleHome"
     cfg = None
     api = None  # Vikunja (None if not configured)
     ko = None   # KitchenOwl (None if not configured)
@@ -2268,7 +2269,7 @@ def main():
     server = make_server(cfg)
     services = ", ".join(f"{n} {u}" for n, u, on in (("Vikunja", cfg.api_url, cfg.vikunja),
                                                     ("KitchenOwl", cfg.ko_url, cfg.kitchenowl)) if on)
-    print(f"kindle-vikunja listening on http://{cfg.host}:{cfg.port} -> {services}", flush=True)
+    print(f"KindleHome listening on http://{cfg.host}:{cfg.port} -> {services}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -1,4 +1,4 @@
 .env
 __pycache__/
 *.pyc
-kindle/extensions/vikunja/config.sh
+kindle/extensions/kindlehome/config.sh

@@ -1,0 +1,18 @@
+{
+  "items": [
+    {
+      "name": "KindleHome",
+      "priority": 0,
+      "items": [
+        {"name": "Start todo display", "priority": 1, "action": "/bin/sh", "params": "/mnt/us/extensions/kindlehome/bin/start.sh", "exitmenu": true},
+        {"name": "Start fullscreen (experimental)", "priority": 2, "action": "/bin/sh", "params": "/mnt/us/extensions/kindlehome/bin/start.sh fullscreen", "exitmenu": true},
+        {"name": "Reload page", "priority": 3, "action": "/bin/sh", "params": "/mnt/us/extensions/kindlehome/bin/reload.sh", "exitmenu": true},
+        {"name": "Show top bar", "priority": 4, "action": "/bin/sh", "params": "/mnt/us/extensions/kindlehome/bin/bars.sh show", "exitmenu": true},
+        {"name": "Test hiding top bar (20 s)", "priority": 5, "action": "/bin/sh", "params": "/mnt/us/extensions/kindlehome/bin/testbars.sh", "exitmenu": true},
+        {"name": "Collect diagnostics (kindlehome-diag.txt)", "priority": 6, "action": "/bin/sh", "params": "/mnt/us/extensions/kindlehome/bin/diag.sh", "exitmenu": false},
+        {"name": "Stop (allow sleep again)", "priority": 7, "action": "/bin/sh", "params": "/mnt/us/extensions/kindlehome/bin/stop.sh", "exitmenu": true},
+        {"name": "Uninstall fullscreen app", "priority": 8, "action": "/bin/sh", "params": "/mnt/us/extensions/kindlehome/bin/app.sh uninstall", "exitmenu": false}
+      ]
+    }
+  ]
+}

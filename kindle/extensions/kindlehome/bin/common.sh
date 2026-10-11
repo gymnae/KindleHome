@@ -1,12 +1,12 @@
 # Shared helpers, sourced by the other scripts.
-EXT=/mnt/us/extensions/vikunja
-PIDFILE=/tmp/kindle-vikunja-watchdog.pid
-MODEFILE=/tmp/kindle-vikunja.mode   # "browser" or "fullscreen", written by start.sh
-LOG=/tmp/kindle-vikunja.log
-LIGHTPID=/tmp/kindle-vikunja-light.pid
-LIGHTSTATE=/tmp/kindle-vikunja.light
-TOUCHFILE=/tmp/kindle-vikunja.touch
-APP_ID=com.kindlevikunja.kiosk
+EXT=/mnt/us/extensions/kindlehome
+PIDFILE=/tmp/kindlehome-watchdog.pid
+MODEFILE=/tmp/kindlehome.mode   # "browser" or "fullscreen", written by start.sh
+LOG=/tmp/kindlehome.log
+LIGHTPID=/tmp/kindlehome-light.pid
+LIGHTSTATE=/tmp/kindlehome.light
+TOUCHFILE=/tmp/kindlehome.touch
+APP_ID=com.kindlehome.kiosk
 APPREG=/var/local/appreg.db
 . "$EXT/config.sh"
 

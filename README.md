@@ -1,4 +1,4 @@
-# kindle-vikunja
+# KindleHome
 
 Turn a jailbroken Kindle (built for the Paperwhite 1) into a wall-mounted,
 touch-enabled household display:
@@ -37,7 +37,7 @@ Shopping list:
 
 ```
 ┌──────────┐  plain HTTP (LAN)  ┌────────────────┐  HTTPS + API tokens  ┌────────────┐
-│  Kindle  │ ─────────────────▶ │ kindle-vikunja │ ───────────────────▶ │ Vikunja    │
+│  Kindle  │ ─────────────────▶ │   KindleHome   │ ───────────────────▶ │ Vikunja    │
 │ browser  │  simple HTML/ES5   │  (this server) │ ───────────────────▶ │ KitchenOwl │
 └──────────┘                    └────────────────┘                      └────────────┘
 ```
@@ -131,8 +131,8 @@ cp .env.example .env      # set VIKUNJA_URL, VIKUNJA_TOKEN, VIKUNJA_PROJECT_ID
 docker compose up -d --build
 ```
 
-Without Docker: `set -a; . ./.env; set +a; python3 server/kindle_vikunja.py`
-(Python ≥ 3.9). A systemd unit is in [deploy/](deploy/kindle-vikunja.service).
+Without Docker: `set -a; . ./.env; set +a; python3 server/kindlehome.py`
+(Python ≥ 3.9). A systemd unit is in [deploy/](deploy/kindlehome.service).
 
 Open `http://<server>:8080/` in a desktop browser to check that it works.
 
@@ -158,12 +158,12 @@ the internet over plain HTTP.
 Prerequisites: jailbreak + [KUAL](https://www.mobileread.com/forums/showthread.php?t=203326)
 installed (as for any KUAL extension).
 
-1. Connect the Kindle via USB and copy `kindle/extensions/vikunja/` to
-   `extensions/vikunja/` on the Kindle drive (i.e. `/mnt/us/extensions/vikunja`).
-2. Edit `extensions/vikunja/config.sh` and set `KV_URL` to your server, e.g.
+1. Connect the Kindle via USB and copy `kindle/extensions/kindlehome/` to
+   `extensions/kindlehome/` on the Kindle drive (i.e. `/mnt/us/extensions/kindlehome`).
+2. Edit `extensions/kindlehome/config.sh` and set `KV_URL` to your server, e.g.
    `http://192.168.1.10:8080/p/12` (add `?key=…` if you set `ACCESS_KEY`).
    Use the IP address or a name the Kindle can resolve. Use `http://`, not https.
-3. Eject the Kindle, open KUAL → **Vikunja Todo → Start todo display**.
+3. Eject the Kindle, open KUAL → **KindleHome → Start todo display**.
 
 What *Start* does:
 
@@ -174,7 +174,7 @@ What *Start* does:
   frees browser memory and also restarts the browser if it crashed.
 
 *Stop* re-enables sleep and returns to the home screen. *Reload page* reopens
-the URL right away. A log is written to `/tmp/kindle-vikunja.log` on the Kindle.
+the URL right away. A log is written to `/tmp/kindlehome.log` on the Kindle.
 
 After a reboot, run *Start todo display* again (it is not started automatically).
 
@@ -203,7 +203,7 @@ After a reboot, run *Start todo display* again (it is not started automatically)
 - *Refresh* in the header reloads the whole page, which also clears e-ink
   ghosting. The page does a full reload on its own every 6 hours as well.
 - **Fullscreen (experimental):** KUAL → *Start fullscreen (experimental)*
-  shows the page in a small Kindle web app of its own (`kindle/extensions/vikunja/app/`)
+  shows the page in a small Kindle web app of its own (`kindle/extensions/kindlehome/app/`)
   instead of the browser. It is the same mechanism the Kindle store and apps
   like Komic use, and it has no toolbar. To do this, Start registers the app
   in the Kindle's app registry (`/var/local/appreg.db`). KUAL → *Uninstall
@@ -238,6 +238,20 @@ the input devices, and `KV_TOUCH_DEV` can name the right one.
 - `KV_FRONTLIGHT` in `config.sh` sets the front light level while the
   display runs. `0` means off, which is fine in a bright room.
 
+## Upgrading from kindle-vikunja
+
+The project used to be called *kindle-vikunja*. To switch an existing setup:
+
+- **Server (Docker):** the service is now called `kindlehome`. Run
+  `docker compose up -d --build --remove-orphans`, so the old
+  `kindle-vikunja` container is removed and port 8080 is free.
+- **Kindle:**
+  1. In KUAL, run the old extension's *Stop* and *Uninstall fullscreen app*.
+  2. Delete `extensions/vikunja/`.
+  3. Copy `kindle/extensions/kindlehome/` to `extensions/kindlehome/`.
+  4. Your old `config.sh` can be copied over unchanged, since the setting
+     names stayed the same.
+
 ## Development
 
 ```sh
@@ -249,5 +263,5 @@ cover tree building, ticking off (the full task object is sent back, because
 Vikunja's update overwrites every field), adding tasks and subtasks, and the
 access key.
 
-Main file: [server/kindle_vikunja.py](server/kindle_vikunja.py). The page's
+Main file: [server/kindlehome.py](server/kindlehome.py). The page's
 JavaScript is plain ES5 on purpose, because the Kindle browser is old.

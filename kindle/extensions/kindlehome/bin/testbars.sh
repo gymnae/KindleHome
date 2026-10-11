@@ -1,7 +1,7 @@
 #!/bin/sh
 # Hides the top bar for 20 seconds, then always brings it back.
 # Run this while the todo page is showing to see what goes wrong.
-. /mnt/us/extensions/vikunja/bin/common.sh
+. /mnt/us/extensions/kindlehome/bin/common.sh
 
 if [ "$1" != "run" ]; then
     # detach, so KUAL closing its menu can't kill us before the bar is restored

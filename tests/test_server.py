@@ -14,7 +14,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "server"))
-import kindle_vikunja as kv  # noqa: E402
+import kindlehome as kv  # noqa: E402
 
 
 class FakeVikunja:

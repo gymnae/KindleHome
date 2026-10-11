@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs in the background while the display is active (started by start.sh):
 # keeps the screensaver off, wifi on, and periodically re-opens the page.
-. /mnt/us/extensions/vikunja/bin/common.sh
+. /mnt/us/extensions/kindlehome/bin/common.sh
 
 trap '' HUP
 echo $$ > "$PIDFILE"
