@@ -875,12 +875,12 @@ class CalendarTests(ServerTest):
     def test_upcoming_events_tile(self):
         status, body, _ = self.req("/")
         self.assertEqual(status, 200)
-        tile = body[body.index('<div class="tile">'):]
-        self.assertLess(tile.index("Upcoming"), tile.index("Groceries"))   # first tile, before the lists
-        names = re.findall(r"</b> ([^<]+)</li>", tile[:tile.index("</div></div>") if "</div></div>" in tile else None])
-        self.assertEqual(names[:3], ["Parents&#x27; evening", "Birthday Cara", "Dentist"])
-        self.assertNotIn("Later", tile.split("Groceries")[0])               # only CALDAV_EVENTS=3
-        self.assertIn("<b>tomorrow</b> Birthday Cara", tile)                # all-day: no time
+        self.assertLess(body.index("Groceries"), body.index('<div class="tile cal">'))   # below the lists
+        tile = body[body.index('<div class="tile cal">'):]
+        names = re.findall(r'<div class="what">([^<]+)</div>', tile)
+        self.assertEqual(names, ["Parents&#x27; evening", "Birthday Cara", "Dentist"])   # CALDAV_EVENTS=3
+        self.assertIn('<div class="ev"><div class="when">tomorrow</div><div class="what">Birthday Cara</div></div>',
+                      tile)                                                  # all-day: no time
 
     def test_credentials_only_when_asked(self):
         self.req("/")

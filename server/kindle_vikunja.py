@@ -1247,7 +1247,10 @@ ul{list-style:none;margin:0;padding:0}
 .tile li{padding:5px 0;border-top:1px dotted #000;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .tile li .due{font-size:.85em;margin-left:8px}
 .tile .tmore{font-size:.8em;margin-top:4px}
-.tile li b{margin-right:6px}
+.tile.cal{padding:4px 0 0;border:0}
+.ev{margin:10px 0 0;padding:8px 14px 10px;border:2px solid #000;-webkit-border-radius:14px;border-radius:14px}
+.ev .when{font-size:.75em;font-weight:bold}
+.ev .what{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .tile .terr{font-weight:bold;font-size:.9em;margin-top:6px}
 @font-face{font-family:KOItems;src:url(/ko/items.ttf) format("truetype")}
 .koi{display:inline-block;width:1.4em;margin-right:.3em;font-family:KOItems;font-size:1.3em;line-height:1;text-align:center;vertical-align:middle;font-weight:normal;font-style:normal}
@@ -1813,9 +1816,11 @@ class Renderer:
             when = self.fmt_date(dt.datetime.combine(day.date(), dt.time()).astimezone(), now)
             if not ev["all_day"]:
                 when += start.strftime(" %H:%M")
-            lines.append(f"<b>{esc(when)}</b> {esc(ev['summary'])}")
-        return self._tile(None, self.cfg.caldav_title or self.t["calendar"], lines=lines,
-                          note="" if lines else self.t["no_events"])
+            lines.append(f'<div class="ev"><div class="when">{esc(when)}</div>'
+                         f'<div class="what">{esc(ev["summary"])}</div></div>')
+        return (f'<div class="tile cal"><div class="th"><span class="tt">'
+                f'{esc(self.cfg.caldav_title or self.t["calendar"])}</span></div>'
+                + ("".join(lines) or f'<div class="tmore">{esc(self.t["no_events"])}</div>') + "</div>")
 
     def vikunja_tile(self, project_id, title, tasks, now=None, max_lines=6):
         now = now or dt.datetime.now().astimezone()
@@ -2091,12 +2096,6 @@ class Handler(BaseHTTPRequestHandler):
     def _tiles(self):
         """Dashboard tiles; a failing service only breaks its own tile."""
         render, tiles = self.render, []
-        if self.calendar:
-            try:
-                tiles.append(render.calendar_tile(self.calendar.upcoming()))
-            except ApiError as e:
-                self.log_message("%s", e)
-                tiles.append(render.error_tile(None, self.cfg.caldav_title or render.t["calendar"], e))
         if self.api:
             if not self.cfg.projects:
                 tiles.append(render._tile("/projects", "Vikunja"))
@@ -2112,6 +2111,12 @@ class Handler(BaseHTTPRequestHandler):
             except ApiError as e:
                 self.log_message("%s", e)
                 tiles.append(render.error_tile("/shop", "KitchenOwl", e))
+        if self.calendar:  # at the bottom
+            try:
+                tiles.append(render.calendar_tile(self.calendar.upcoming()))
+            except ApiError as e:
+                self.log_message("%s", e)
+                tiles.append(render.error_tile(None, self.cfg.caldav_title or render.t["calendar"], e))
         return "".join(tiles)
 
     def _shop_route(self, method, path):

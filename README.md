@@ -100,7 +100,7 @@ caches them in memory. `EMOJI=strip` removes emoji instead.
 
 Set `CALDAV_URL` to one or more calendar URLs, separated by spaces, and the
 dashboard shows the next `CALDAV_EVENTS` (3) events of all of them together,
-in a tile at the top. All URLs go into this one line: a second
+in a section at the bottom, one rounded box per event. All URLs go into this one line: a second
 `CALDAV_URL=` line would replace the first.
 
 `CALDAV_USER`/`CALDAV_PASSWORD` are only sent when a server asks for a login,
