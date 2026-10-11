@@ -1249,9 +1249,11 @@ ul{list-style:none;margin:0;padding:0}
 .tile li .due{font-size:.85em;margin-left:8px}
 .tile .tmore{font-size:.8em;margin-top:4px}
 .tile.cal{padding:4px 0 0;border:0}
-.ev{margin:10px 0 0;padding:8px 14px 10px;border:2px solid #000;-webkit-border-radius:14px;border-radius:14px}
-.ev .when{font-size:.75em;font-weight:bold}
-.ev .what{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.evwrap{margin:8px -10px 0}
+.evrow{display:table;width:100%;table-layout:fixed;border-collapse:separate;border-spacing:10px 0}
+.ev{display:table-cell;vertical-align:top;padding:6px 10px 8px;border:2px solid #000;-webkit-border-radius:14px;border-radius:14px}
+.ev .when{font-size:.7em;font-weight:bold;white-space:nowrap;overflow:hidden}
+.ev .what{font-size:.85em;line-height:1.25;max-height:2.5em;overflow:hidden;word-wrap:break-word}
 .tile .terr{font-weight:bold;font-size:.9em;margin-top:6px}
 @font-face{font-family:KOItems;src:url(/ko/items.ttf) format("truetype")}
 .koi{display:inline-block;width:1.4em;margin-right:.3em;font-family:KOItems;font-size:1.3em;line-height:1;text-align:center;vertical-align:middle;font-weight:normal;font-style:normal}
@@ -1821,7 +1823,8 @@ class Renderer:
                          f'<div class="what">{esc(ev["summary"])}</div></div>')
         return (f'<div class="tile cal"><div class="th"><span class="tt">'
                 f'{esc(self.cfg.caldav_title or self.t["calendar"])}</span></div>'
-                + ("".join(lines) or f'<div class="tmore">{esc(self.t["no_events"])}</div>') + "</div>")
+                + (f'<div class="evwrap"><div class="evrow">{"".join(lines)}</div></div>' if lines
+                   else f'<div class="tmore">{esc(self.t["no_events"])}</div>') + "</div>")
 
     def vikunja_tile(self, project_id, title, tasks, now=None, max_lines=6):
         now = now or dt.datetime.now().astimezone()

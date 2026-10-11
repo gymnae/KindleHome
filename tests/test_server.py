@@ -879,6 +879,7 @@ class CalendarTests(ServerTest):
         tile = body[body.index('<div class="tile cal">'):]
         names = re.findall(r'<div class="what">([^<]+)</div>', tile)
         self.assertEqual(names, ["Parents&#x27; evening", "Birthday Cara", "Dentist"])   # CALDAV_EVENTS=3
+        self.assertIn('<div class="evwrap"><div class="evrow"><div class="ev">', tile)       # one row
         self.assertIn('<div class="ev"><div class="when">tomorrow</div><div class="what">Birthday Cara</div></div>',
                       tile)                                                  # all-day: no time
 
