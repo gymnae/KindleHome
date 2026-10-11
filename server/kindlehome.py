@@ -1272,11 +1272,11 @@ ul{list-style:none;margin:0;padding:0}
 .tile.fit{overflow:hidden}
 body.dash{padding-bottom:6px}
 .tile.cal{padding:4px 0 0;border:0}
-.evwrap{margin:8px -10px 0}
-.evrow{display:table;width:100%;table-layout:fixed;border-collapse:separate;border-spacing:10px 0}
-.ev{display:table-cell;vertical-align:top;padding:6px 10px 8px;border:2px solid #000;-webkit-border-radius:14px;border-radius:14px}
-.ev .when{font-size:.7em;font-weight:bold;white-space:nowrap;overflow:hidden}
-.ev .what{font-size:.85em;line-height:1.25;max-height:2.5em;overflow:hidden;word-wrap:break-word}
+.evwrap{margin:10px -12px 0}
+.evrow{display:table;width:100%;table-layout:fixed;border-collapse:separate;border-spacing:12px 0}
+.ev{display:table-cell;vertical-align:top;padding:8px 14px 10px;border:2px solid #000;-webkit-border-radius:14px;border-radius:14px}
+.ev .when{font-size:.75em;font-weight:bold;white-space:nowrap;overflow:hidden}
+.ev .what{line-height:1.3;max-height:2.6em;overflow:hidden;word-wrap:break-word}
 .tile .terr{font-weight:bold;font-size:.9em;margin-top:6px}
 @font-face{font-family:KOItems;src:url(/ko/items.ttf) format("truetype")}
 .koi{display:inline-block;width:1.4em;margin-right:.3em;font-family:KOItems;font-size:1.3em;line-height:1;text-align:center;vertical-align:middle;font-weight:normal;font-style:normal}
