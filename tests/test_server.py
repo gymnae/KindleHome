@@ -37,6 +37,7 @@ class FakeVikunja:
         }
         self.subtasks = {2: [3, 4]}  # parent -> children
         self.next_id = 6
+        self.assigned = []           # (task id, user id)
 
     def with_relations(self, task):
         t = dict(task)
@@ -83,7 +84,15 @@ class FakeVikunja:
                     return self.reply(200, [{"id": 1, "title": "Home"},
                                             {"id": 7, "title": "Sub", "parent_project_id": 1}])
                 if p == "/api/v1/projects/1":
-                    return self.reply(200, {"id": 1, "title": "Home"})
+                    return self.reply(200, {"id": 1, "title": "Home",
+                                            "owner": {"id": 1, "username": "anna", "name": "Anna Example"}})
+                if p == "/api/v1/projects/1/projectusers":
+                    return self.reply(200, [{"id": 2, "username": "ben", "name": "Ben Smith", "right": 1},
+                                            {"id": 1, "username": "anna", "name": "Anna Example"}])
+                if p == "/api/v1/projects/1/teams":
+                    return self.reply(200, [{"id": 5, "name": "Family"}])
+                if p == "/api/v1/teams/5":
+                    return self.reply(200, {"id": 5, "members": [{"id": 3, "username": "cara", "name": ""}]})
                 if p == "/api/v1/projects/1/views":
                     return self.reply(200, [{"id": 9, "view_kind": "kanban"}, {"id": 10, "view_kind": "list"}])
                 if p == "/api/v1/projects/1/views/10/tasks":
@@ -114,9 +123,13 @@ class FakeVikunja:
             def do_PUT(self):
                 if not self.check_auth():
                     return
+                m = re.fullmatch(r"/api/v1/tasks/(\d+)/assignees", self.path)
+                if m:
+                    fake.assigned.append((int(m.group(1)), self.body()["user_id"]))
+                    return self.reply(201, {})
                 if self.path == "/api/v1/projects/1/tasks":
                     data = self.body()
-                    t = {"id": fake.next_id, "title": data["title"], "done": False, "project_id": 1}
+                    t = dict(data, id=fake.next_id, done=False, project_id=1)
                     fake.tasks[t["id"]] = t
                     fake.next_id += 1
                     return self.reply(201, t)
@@ -497,6 +510,43 @@ class OrderTests(ServerTest):
         _, body, _ = self.req("/p/1/list")
         self.assertLess(body.index('data-id="2"'), body.index('data-id="1"'))
         self.assertEqual(self.fake.last_query["sort_by"], ["position", "id"])
+
+
+class QuickAddTests(ServerTest):
+    ajax = {"X-Requested-With": "XMLHttpRequest"}
+
+    def test_chips_on_list_page(self):
+        _, body, _ = self.req("/p/1")
+        self.assertIn('<button type="button" class="chip" data-kind="due" data-v="today">Today</button>', body)
+        self.assertIn('data-v="weekend">Weekend</button>', body)
+        # owner + shared user + team member, first names, no duplicates, sorted
+        people = re.findall(r'data-kind="who" data-v="(\d+)">([^<]*)<', body)
+        self.assertEqual(people, [("1", "Anna"), ("2", "Ben"), ("3", "cara")])
+        self.assertIn('<input type="hidden" id="due" name="due" value="">', body)
+
+    def test_add_with_due_and_assignees(self):
+        status, _, _ = self.req("/p/1/add", {"title": "Call plumber", "due": "tomorrow", "who": "1,3"}, self.ajax)
+        self.assertEqual(status, 204)
+        task = self.fake.tasks[6]
+        due = kv.parse_date(task["due_date"])
+        tomorrow = kv.dt.datetime.now().astimezone().date() + kv.dt.timedelta(days=1)
+        self.assertEqual((due.date(), due.hour, due.minute), (tomorrow, 23, 59))
+        self.assertEqual(self.fake.assigned, [(6, 1), (6, 3)])
+        _, body, _ = self.req("/p/1/list")
+        self.assertIn(">tomorrow</span>", body)          # quick-add time not shown
+        self.assertEqual(self.req("/p/1/add", {"title": "x", "who": "1;drop"}, self.ajax)[0], 400)
+
+    def test_quick_due(self):
+        at = kv.dt.time(23, 59)
+        tz = kv.dt.timezone.utc
+        wed = kv.dt.datetime(2026, 10, 7, 9, 0, tzinfo=tz)
+        sat = kv.dt.datetime(2026, 10, 10, 9, 0, tzinfo=tz)
+        sun = kv.dt.datetime(2026, 10, 11, 9, 0, tzinfo=tz)
+        self.assertEqual(kv.quick_due("weekend", at, wed).date(), kv.dt.date(2026, 10, 10))
+        self.assertEqual(kv.quick_due("weekend", at, sat).date(), kv.dt.date(2026, 10, 10))
+        self.assertEqual(kv.quick_due("weekend", at, sun).date(), kv.dt.date(2026, 10, 11))
+        self.assertEqual(kv.quick_due("tomorrow", at, sun).date(), kv.dt.date(2026, 10, 12))
+        self.assertIsNone(kv.quick_due("someday", at, wed))
 
 
 class DashboardTests(ServerTest):

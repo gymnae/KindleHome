@@ -58,6 +58,8 @@ In Vikunja go to *Settings → API Tokens → Create a token* and grant at least
 | projects         | read_all, read_one                          |
 | projects / views | read_all, (views tasks) read_all            |
 | tasks            | read_all, read_one, create, update          |
+| tasks_assignees  | create (assignee chips when adding a task)  |
+| projects_users, projects_teams, teams | read_all (people chips; optional) |
 
 The permission names in the UI differ a bit between versions. If anything
 fails with a 401/403, pick all permissions in these groups. Choose a long
@@ -154,6 +156,12 @@ After a reboot, run *Start todo display* again (it is not started automatically)
   project name at the top to go back. The detail page also goes back to the
   list on its own after 5 minutes without input (`DETAIL_RETURN_SECONDS`).
   To show subtasks nested in the main list as well, set `LIST_SUBTASKS=1`.
+- When you tap into "New task…", chips appear under the field. *Today*,
+  *Tomorrow* and *Weekend* (the coming Saturday) set a due date. The first
+  names of everyone with access to the project (owner, shared users, team
+  members) assign the task, and several can be picked. Tap a chip again to
+  deselect it. Chip due dates use the time `QUICK_DUE_TIME` (23:59), so a
+  task due "today" isn't overdue at noon.
 - Tap a box to tick a task off. It is struck through right away and
   disappears at the next sync. Tap again before then to undo.
 - Tap the text field on the main page to add a task with the on-screen

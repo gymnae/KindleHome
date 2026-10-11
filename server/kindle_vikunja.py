@@ -43,6 +43,7 @@ STRINGS = {
         "pick": "Choose a project",
         "back": "Back", "subtasks": "Subtasks", "parent": "Part of",
         "new_subtask": "New subtask…",
+        "weekend": "Weekend",
         "home": "Home", "recent": "Recently bought", "new_item": "Add item…", "other": "Other",
         "open_count": "{n} open", "item_count": "{n} items", "more": "+{n} more",
         "list_empty": "The shopping list is empty.", "not_configured": "{name} is not configured.",
@@ -57,6 +58,7 @@ STRINGS = {
         "pick": "Projekt wählen",
         "back": "Zurück", "subtasks": "Unteraufgaben", "parent": "Teil von",
         "new_subtask": "Neue Unteraufgabe…",
+        "weekend": "Wochenende",
         "home": "Start", "recent": "Zuletzt gekauft", "new_item": "Artikel hinzufügen…", "other": "Sonstiges",
         "open_count": "{n} offen", "item_count": "{n} Artikel", "more": "+{n} weitere",
         "list_empty": "Die Einkaufsliste ist leer.", "not_configured": "{name} ist nicht eingerichtet.",
@@ -102,6 +104,9 @@ class Config:
         # "position" = the manual (drag and drop) order of Vikunja's list view
         self.sort = env.get("SORT", "position").strip().lower()
         self.font_size = int(env.get("FONT_SIZE", "24"))
+        # time of day for due dates set with the Today/Tomorrow/Weekend chips
+        hh, _, mm = env.get("QUICK_DUE_TIME", "23:59").partition(":")
+        self.quick_due_time = dt.time(int(hh), int(mm or 0))
         self.dash_font_size = int(env.get("DASHBOARD_FONT_SIZE", "28"))
         # The Kindle has no emoji font: "image" (Twemoji pictures via this server) | "strip" | "keep"
         self.emoji = env.get("EMOJI", "image").strip().lower()
@@ -176,6 +181,7 @@ class Vikunja(JsonApi):
     def __init__(self, cfg):
         super().__init__(cfg.api_url, cfg.token, cfg.timeout, cfg.verify_tls)
         self._titles = {}  # project id -> (title, fetched at)
+        self._users = {}   # project id -> (users, fetched at)
 
     def project_title(self, project_id):
         """Project title, cached for 10 minutes (used by the dashboard on every refresh)."""
@@ -268,9 +274,42 @@ class Vikunja(JsonApi):
     def set_done(self, task_id, done):
         self._update(task_id, lambda task: task.__setitem__("done", bool(done)))
 
-    def create_task(self, project_id, title, parent_id=None):
-        task = self.request("PUT", f"/projects/{project_id}/tasks",
-                            body={"title": title, "project_id": int(project_id)})[0]
+    def project_users(self, project_id):
+        """Everyone with access to a project (owner, shared users, team members), cached 10 min.
+
+        Parts the token may not read (e.g. teams) are skipped."""
+        cached = self._users.get(str(project_id))
+        if cached and time.time() - cached[1] < 600:
+            return cached[0]
+        users = {}
+
+        def add(user):
+            if user and user.get("id"):
+                users.setdefault(user["id"], user)
+
+        add(self.project(project_id).get("owner"))
+        try:
+            for user in self.get_all(f"/projects/{project_id}/projectusers"):
+                add(user)
+            for team in self.get_all(f"/projects/{project_id}/teams"):
+                members = team.get("members")
+                if members is None:
+                    members = self.request("GET", f"/teams/{team['id']}")[0].get("members") or []
+                for member in members:
+                    add(member)
+        except ApiError as e:
+            sys.stderr.write(f"project users of {project_id} incomplete: {e}\n")
+        result = sorted(users.values(), key=lambda u: (_first_name(u).lower(), u["id"]))
+        self._users[str(project_id)] = (result, time.time())
+        return result
+
+    def create_task(self, project_id, title, parent_id=None, due=None, assignees=()):
+        body = {"title": title, "project_id": int(project_id)}
+        if due:
+            body["due_date"] = due.isoformat()
+        task = self.request("PUT", f"/projects/{project_id}/tasks", body=body)[0]
+        for user_id in assignees:
+            self.request("PUT", f"/tasks/{task['id']}/assignees", body={"user_id": int(user_id)})
         if parent_id:
             self.request("PUT", f"/tasks/{parent_id}/relations", body={
                 "task_id": int(parent_id), "other_task_id": task["id"], "relation_kind": "subtask"})
@@ -524,6 +563,24 @@ def sort_key(mode):
     if mode == "created":
         return lambda t: (t.get("created") or "", t.get("id", 0))
     return lambda t: (*due(t), prio(t), t.get("id", 0))
+
+
+def _first_name(user):
+    name = (user.get("name") or "").strip() or (user.get("username") or "").strip()
+    return name.split()[0] if name else "?"
+
+
+def quick_due(kind, at, now=None):
+    """Due date for a quick-add chip: today, tomorrow or weekend (coming Saturday, today on weekends)."""
+    now = now or dt.datetime.now().astimezone()
+    day = now.date()
+    if kind == "tomorrow":
+        day += dt.timedelta(days=1)
+    elif kind == "weekend" and now.weekday() < 5:
+        day += dt.timedelta(days=5 - now.weekday())
+    elif kind not in ("today", "weekend"):
+        return None
+    return dt.datetime.combine(day, at).astimezone()
 
 
 def assignee_names(task):
@@ -871,6 +928,10 @@ ul{list-style:none;margin:0;padding:0}
 .tile .koi{font-size:1.1em;width:1.3em}
 #sugg button{display:block;width:100%;margin:0;padding:8px 4px;border:0;border-bottom:1px dotted #000;background:#fff;color:#000;font:inherit;text-align:left;-webkit-appearance:none;border-radius:0}
 #sugg{display:none;margin:0 0 8px;border-top:2px solid #000}
+#chips{display:none;margin:6px 0 0}
+.chiprow{margin:0 0 2px}
+.chip{display:inline-block;margin:0 6px 6px 0;padding:6px 12px;border:2px solid #000;border-radius:1em;background:#fff;color:#000;font-size:.8em;-webkit-appearance:none}
+.chip.on{background:#000;color:#fff}
 .note{display:inline-block;min-width:1.6em;padding:2px 4px;text-align:center}
 .plist a{display:block;padding:14px 0;border-bottom:1px solid #000;text-decoration:none}
 .open{display:block;color:#000;text-decoration:none}
@@ -1036,8 +1097,32 @@ JS = r"""
     });
   }
 
+  // Quick-add chips (due date, assignees) under "New task": shown while adding.
+  function resetChips() {
+    var box = $("chips");
+    if (!box) return;
+    var all = box.getElementsByTagName("button");
+    for (var i = 0; i < all.length; i++) setCls(all[i], "on", false);
+    $("due").value = ""; $("who").value = "";
+    box.style.display = "none";
+  }
+  function pickChip(chip) {
+    var row = chip.parentNode, kind = chip.getAttribute("data-kind"), on = !hasCls(chip, "on");
+    var all = row.getElementsByTagName("button"), picked = [];
+    if (kind === "due") for (var i = 0; i < all.length; i++) setCls(all[i], "on", false);
+    setCls(chip, "on", on);
+    for (var j = 0; j < all.length; j++) if (hasCls(all[j], "on")) picked.push(all[j].getAttribute("data-v"));
+    $(kind).value = picked.join(",");
+  }
+  if ($("chips")) {
+    $("title").addEventListener("focus", function () { $("chips").style.display = "block"; }, false);
+    setInterval(function () { if ($("title").value) $("chips").style.display = "block"; }, 700);
+  }
+
   document.addEventListener("click", function (ev) {
     var el = ev.target;
+    var chip = closest(el, "chip");
+    if (chip) { ev.preventDefault(); touch(); pickChip(chip); return; }
     if (closest(el, "ren")) {
       if (hasCls(el, "cancel")) { ev.preventDefault(); stopEdit(null); }
       return;
@@ -1080,6 +1165,7 @@ JS = r"""
         title.value = "";
         title.blur();
         showSugg("");
+        resetChips();
         if (!CFG.list) { location.reload(); return; }
         lastAct = 0;
         refresh();
@@ -1196,7 +1282,7 @@ class Renderer:
             label = d.strftime("%d.%m.")
         else:
             label = d.strftime("%d.%m.%Y")
-        if (d.hour, d.minute) != (0, 0):
+        if (d.hour, d.minute) not in ((0, 0), (self.cfg.quick_due_time.hour, self.cfg.quick_due_time.minute)):
             label += d.strftime(" %H:%M")
         return label
 
@@ -1309,7 +1395,19 @@ class Renderer:
             return f'<p class="empty">{esc(self.t["empty"])}</p>'
         return '<ul id="tasks">' + "".join(items) + "</ul>"
 
-    def task_page(self, project_id, title, list_html, error=None):
+    def _chips(self, users):
+        t = self.t
+        due = "".join(f'<button type="button" class="chip" data-kind="due" data-v="{k}">{esc(label)}</button>'
+                      for k, label in (("today", t["today"].capitalize()), ("tomorrow", t["tomorrow"].capitalize()),
+                                       ("weekend", t["weekend"])))
+        who = "".join(f'<button type="button" class="chip" data-kind="who" data-v="{u["id"]}">'
+                      f'{esc(_first_name(u))}</button>' for u in users)
+        return ('<input type="hidden" id="due" name="due" value="">'
+                '<input type="hidden" id="who" name="who" value="">'
+                f'<div id="chips"><div class="chiprow">{due}</div>'
+                + (f'<div class="chiprow">{who}</div>' if who else "") + "</div>")
+
+    def task_page(self, project_id, title, list_html, error=None, users=()):
         t = self.t
         banner = f'<div class="banner">{esc(error)}</div>' if error else ""
         body = (
@@ -1320,7 +1418,8 @@ class Renderer:
             f'{banner}<form id="add" method="post" action="/p/{project_id}/add">'
             '<div class="line"><div class="in">'
             f'<input type="text" id="title" name="title" autocomplete="off" placeholder="{esc(t["new_task"])}">'
-            f'</div><div class="go"><button type="submit">{esc(t["add"])}</button></div></div></form>'
+            f'</div><div class="go"><button type="submit">{esc(t["add"])}</button></div></div>'
+            f'{self._chips(users)}</form>'
             f'<div id="status"></div><div id="list">{list_html}</div>'
         )
         return self.layout(title, body, self._script(list=f"/p/{project_id}/list", **self._home_return()))
@@ -1719,7 +1818,12 @@ class Handler(BaseHTTPRequestHandler):
     def _task_page(self, project_id):
         project = self.api.project(project_id)
         list_html = self.render.task_list(project_id, self.api.open_tasks(project_id))
-        self._send(200, self.render.task_page(project_id, project.get("title") or "", list_html))
+        try:
+            users = self.api.project_users(project_id)
+        except ApiError as e:
+            self.log_message("%s", e)
+            users = []
+        self._send(200, self.render.task_page(project_id, project.get("title") or "", list_html, users=users))
 
     def _detail_page(self, task_id):
         task = self.api.task(task_id)
@@ -1783,7 +1887,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, "empty title", "text/plain") if self._ajax() else self._redirect(f"/p/{project_id}")
         if parent and not parent.isdigit():
             return self._send(400, "bad parent id", "text/plain")
-        self.api.create_task(project_id, title[:250], int(parent) if parent else None)
+        who = [w for w in form.get("who", "").split(",") if w]
+        if not all(w.isdigit() for w in who):
+            return self._send(400, "bad assignee", "text/plain")
+        due = quick_due(form.get("due", ""), self.cfg.quick_due_time) if form.get("due") else None
+        self.api.create_task(project_id, title[:250], int(parent) if parent else None, due=due, assignees=who)
         if self._ajax():
             return self._send(204, "")
         self._redirect(f"/p/{project_id}")
