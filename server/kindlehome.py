@@ -1507,7 +1507,7 @@ JS = r"""
         $("title").value = "";
         $("title").blur();
         showSugg("");
-        lastAct = 0;
+        touch();     // counts as activity: restarts the return-to-dashboard timer
         refresh();
       });
     } else if (f.id === "add") {
@@ -1522,7 +1522,7 @@ JS = r"""
         showSugg("");
         resetChips();
         if (!CFG.list) { location.reload(); return; }
-        lastAct = 0;
+        touch();     // counts as activity: restarts the return-to-dashboard timer
         refresh();
       });
     }

@@ -699,6 +699,12 @@ class EmojiTests(ServerTest):
         self.assertEqual(self.req("/emoji/..%2fetc.png")[0], 404)
 
 
+class ScriptTests(unittest.TestCase):
+    def test_adding_restarts_idle_timer(self):
+        # resetting the activity time to 0 made the page jump back to the dashboard right away
+        self.assertNotIn("lastAct = 0", kv.JS)
+
+
 class IconUnitTests(unittest.TestCase):
     def test_emojify(self):
         self.assertEqual(kv.emojify("\U0001F966 Obst \u2192 \u2713 \u00a9", "image"),
