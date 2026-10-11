@@ -12,6 +12,7 @@ Configuration is done with environment variables, see .env.example.
 """
 
 import datetime as dt
+import hashlib
 import hmac
 import html
 import json
@@ -1355,6 +1356,8 @@ JS = r"""
       busy = false;
       lastRefresh = now();
       if (!ok) { status(errText(r), true); return; }
+      var version = r.getResponseHeader("X-Page-Version");
+      if (version && version !== CFG.version) { location.reload(); return; }   // server was updated
       // Only touch the DOM when something changed: every redraw flashes e-ink.
       if (r.responseText !== current) {
         $("list").innerHTML = r.responseText;
@@ -1583,6 +1586,11 @@ JS = r"""
 """
 
 
+# Stamp of the page code: background refreshes only replace content, so a page loaded before a
+# server update would keep its old CSS/JS. Pages reload themselves when this changes.
+PAGE_VERSION = hashlib.sha1((CSS + JS).encode("utf-8")).hexdigest()[:10]
+
+
 class Renderer:
     def __init__(self, cfg, icons=None):
         self.cfg = cfg
@@ -1704,7 +1712,8 @@ class Renderer:
     def _script(self, **cfg):
         pager = ('<div id="pager" style="display:none"><a id="pgup" href="#"><span class="tri up"></span></a>'
                  '<a id="pgdn" href="#"><span class="tri dn"></span></a></div>')
-        cfg.update(refresh=self.cfg.refresh, reloadHours=6, error=self.t["error"], offline=self.t["offline"],
+        cfg.update(version=PAGE_VERSION, refresh=self.cfg.refresh, reloadHours=6, error=self.t["error"],
+                   offline=self.t["offline"],
                    save=self.t["save"], cancel=self.t["cancel"])
         return pager + "<script>" + JS.replace("%%CFG%%", json.dumps(cfg)) + "</script>"
 
@@ -1990,6 +1999,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", cache)
+        self.send_header("X-Page-Version", PAGE_VERSION)
         if self._cookie:
             self.send_header("Set-Cookie", self._cookie)
         for k, v in (headers or {}).items():
