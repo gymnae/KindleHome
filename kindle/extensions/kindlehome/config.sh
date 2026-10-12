@@ -4,7 +4,7 @@
 # "/" shows the dashboard (if enabled on the server), /p/<id> a Vikunja project,
 # /shop the KitchenOwl shopping list. If ACCESS_KEY is set on the server, append ?key=<ACCESS_KEY>
 # (only needed once, a cookie remembers it).
-KV_URL="http://192.168.0.31:8080/p/3"
+KV_URL="http://192.168.0.31:8080"
 
 # Re-open the page every N hours: frees browser memory and clears e-ink ghosting.
 # 0 = never.
