@@ -1277,7 +1277,8 @@ ul{list-style:none;margin:0;padding:0}
 .sub .body{font-size:.9em}
 .meta{font-size:.7em;white-space:nowrap}
 .meta span{margin-left:6px}
-.due.over{background:#000;color:#fff;padding:0 4px;font-weight:bold}
+.due{display:inline-block;padding:0 .45em;border:1px solid #000;-webkit-border-radius:.7em;border-radius:.7em;font-weight:bold;line-height:1.35}
+.due.over{background:#000;color:#fff}
 .prio{font-weight:bold}
 .lbl{border:1px solid #000;padding:0 4px}
 .who{font-weight:bold;font-style:italic}
@@ -1288,7 +1289,8 @@ ul{list-style:none;margin:0;padding:0}
 .tile .tc{display:table-cell;text-align:right;font-size:1.2em;font-weight:bold;white-space:nowrap}
 .tile ul{margin:6px 0 0}
 .tile li{padding:5px 0;border-top:1px dotted #000;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.tile li .due{font-size:.85em;margin-left:8px}
+.tile li .due{font-size:.75em;margin-left:8px;vertical-align:1px}
+.tile li .desc{font-size:.85em;margin-left:8px}
 .tile .tmore{font-size:.8em;margin-top:4px}
 .tile.fit{overflow:hidden}
 body.dash{padding-bottom:6px}
@@ -1996,7 +1998,7 @@ class Renderer:
 
     def shop_tile(self, lst, max_lines=12):
         items = sorted(lst.get("items") or [], key=_shop_item_key)
-        lines = [self._koi(i) + esc(i.get("name")) + (f' <span class="due">{esc(i["description"])}</span>'
+        lines = [self._koi(i) + esc(i.get("name")) + (f' <span class="desc">{esc(i["description"])}</span>'
                                        if i.get("description") else "") for i in items[:max_lines]]
         return self._tile(f"/s/{lst['id']}", self.t["shop_title"],
                           self.t["item_count"].format(n=len(items)), lines, len(items) - len(lines), total=len(items))

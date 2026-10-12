@@ -612,7 +612,7 @@ class DashboardTests(ServerTest):
         self.assertIn('<div class="tmore" style="display:none">+0 more</div>', body)   # filled in by fitDashboard
         self.assertIn('<body class="dash">', body)
         self.assertIn('"dash": true', body)
-        self.assertIn('Milk <span class="due">2 l</span>', body)
+        self.assertIn('Milk <span class="desc">2 l</span>', body)
         self.assertIn('"list": "/dash/list"', body)
         status, frag, headers = self.req("/dash/list")
         self.assertTrue(frag.startswith('<a class="tile fit"'))
