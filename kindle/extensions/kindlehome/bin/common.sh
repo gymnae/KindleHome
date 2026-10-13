@@ -31,6 +31,13 @@ show_bars() {
 
 open_page() {
     if [ "$(cat "$MODEFILE" 2>/dev/null)" = "fullscreen" ]; then
+        # Starting the app while it runs makes the Kindle show an "application error"
+        # popup, so stop it first (that's also a real restart, which frees its memory).
+        if [ "$(active_app)" = "$APP_ID" ]; then
+            log "stopping fullscreen app to restart it"
+            lipc-set-prop com.lab126.appmgrd stop "$APP_ID"
+            sleep 5
+        fi
         log "opening fullscreen app ($KV_URL)"
         lipc-set-prop com.lab126.appmgrd start "app://$APP_ID"
     else
