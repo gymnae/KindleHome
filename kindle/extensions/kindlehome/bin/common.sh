@@ -29,34 +29,52 @@ show_bars() {
     lipc-set-prop com.lab126.pillow disableEnablePillow enable
 }
 
-# Starting an app while it runs makes the Kindle show an "application error" popup
-# (this happened with the nightly relaunch), so stop it first. That's also a real
-# restart, which frees its memory.
-stop_if_active() {
+RESTARTING=/tmp/kindlehome.restarting   # exists while open_page switches apps
+HOME_APP=com.lab126.booklet.home
+
+# wait_for <seconds> <test...>: poll once a second until the test succeeds.
+wait_for() {
+    max=$1; shift
+    n=0
+    while ! "$@" && [ "$n" -lt "$max" ]; do
+        sleep 1
+        n=$((n + 1))
+    done
+}
+at_home() { [ "$(active_app)" = "$HOME_APP" ]; }
+app_is_active() { [ "$(active_app)" = "$APP_ID" ]; }
+app_gone() { ! app_process_running; }
+
+# Starting an app while another one is still switching makes the Kindle show an
+# "application error" popup: the app being left (e.g. KUAL closing its menu) fails to
+# pause in time. So first get to the home screen, like the app's Exit link does, and
+# let everything settle. Leaving also unloads the app, a real restart that frees memory.
+go_home() {
     if [ "$(active_app)" = "$1" ]; then
-        log "stopping $1 to restart it"
-        lipc-set-prop com.lab126.appmgrd stop "$1"
-        # wait until it's really gone (a fixed 5 s may be too short), at most 30 s
-        n=0
-        while [ "$(active_app)" = "$1" ] && [ "$n" -lt 30 ]; do
-            sleep 1
-            n=$((n + 1))
-        done
-        log "stopped $1 after ${n}s"
-        sleep 3
+        log "going to the home screen to restart $1"
+        lipc-set-prop com.lab126.appmgrd start "app://$HOME_APP"
     fi
+    wait_for 30 at_home
+    log "active app before opening: $(active_app)"
 }
 
 open_page() {
+    touch "$RESTARTING"
     if [ "$(cat "$MODEFILE" 2>/dev/null)" = "fullscreen" ]; then
-        stop_if_active "$APP_ID"
+        go_home "$APP_ID"
+        wait_for 30 app_gone   # unloadOnPause: its process ends once it's paused
+        sleep 3
         log "opening fullscreen app ($KV_URL)"
         lipc-set-prop com.lab126.appmgrd start "app://$APP_ID"
+        wait_for 30 app_is_active
     else
-        stop_if_active com.lab126.browser
+        go_home com.lab126.browser
+        lipc-set-prop com.lab126.appmgrd stop com.lab126.browser   # paused now, so this is quiet
+        sleep 3
         log "opening $KV_URL in the browser"
         lipc-set-prop com.lab126.appmgrd start "app://com.lab126.browser?view=$KV_URL"
     fi
+    rm -f "$RESTARTING"
 }
 
 # Register the fullscreen web app in the Kindle's app registry, like Komic does.
@@ -144,14 +162,23 @@ active_app() {
     lipc-get-prop com.lab126.appmgrd activeApp 2>/dev/null
 }
 
+# cmdline of each process (processes that end while we look are skipped silently)
+cmdlines() {
+    for d in /proc/[0-9]*; do
+        { echo "$d $(tr '\0' ' ' < "$d/cmdline")"; } 2>/dev/null
+    done
+}
+
+app_process_running() {
+    cmdlines | grep -q "[m]esquite.*$APP_ID"
+}
+
 # One line for the log: battery, free memory and the app's memory use (to spot leaks).
 status_line() {
     avail=$(awk '/^(MemFree|Buffers|Cached):/ { s += $2 } END { print s }' /proc/meminfo)
     rss=""
-    for d in /proc/[0-9]*; do
-        case "$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)" in
-            *mesquite*"$APP_ID"*|*mesquite*com.lab126.browser*) rss="$rss $(awk '/^VmRSS:/ { print $2 }' "$d/status")kB" ;;
-        esac
+    for d in $(cmdlines | grep -e "[m]esquite.*$APP_ID" -e "[m]esquite.*com.lab126.browser" | cut -d' ' -f1); do
+        rss="$rss $(awk '/^VmRSS:/ { print $2 }' "$d/status" 2>/dev/null)kB"
     done
     echo "battery $(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)%," \
          "free ${avail}kB, page${rss:- not running}"

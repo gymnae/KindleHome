@@ -7,6 +7,7 @@
 trap '' HUP
 echo $$ > "$PIDFILE"
 log "watchdog started (pid $$)"
+[ "$1" = open ] && open_page
 hide_bars_if_configured
 last=$(date +%s)
 active=""
@@ -21,7 +22,8 @@ while true; do
         log "active app: ${now_app:-?} ($(status_line))"
         # The fullscreen app was showing and now the home screen is, but nobody tapped Exit:
         # it crashed (or was unloaded). Without a readable app state, do nothing (fail safe).
-        if [ "$active" = "$APP_ID" ] && [ "$now_app" = com.lab126.booklet.home ] \
+        # (A restart from "Reload page" also passes the home screen: not a crash.)
+        if [ "$active" = "$APP_ID" ] && [ "$now_app" = "$HOME_APP" ] && [ ! -f "$RESTARTING" ] \
            && [ "$(cat "$MODEFILE" 2>/dev/null)" = fullscreen ] && [ "$(app_state)" = r ]; then
             crash_report "fullscreen app closed unexpectedly"
             if [ "$reopened" -lt 10 ]; then

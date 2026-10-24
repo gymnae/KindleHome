@@ -17,6 +17,6 @@ elif [ -n "$KV_FRONTLIGHT" ]; then
     lipc-set-prop com.lab126.powerd flIntensity "$KV_FRONTLIGHT"
 fi
 
-start_detached "$EXT/bin/watchdog.sh"
-
-open_page
+# The watchdog opens the page once KUAL has closed (see open_page).
+rm -f "$RESTARTING"
+start_detached "$EXT/bin/watchdog.sh" open
