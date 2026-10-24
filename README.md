@@ -217,7 +217,8 @@ After a reboot, run *Start todo display* again (it is not started automatically)
   date or assignees, open the subtask first.
 - Auto-refresh pauses while you type or right after you tapped something.
 - *Refresh* in the header reloads the whole page, which also clears e-ink
-  ghosting. The page does a full reload on its own every 6 hours as well.
+  ghosting. The page does a full reload on its own every 6 hours as well;
+  with a dashboard, that reload goes back to the dashboard.
 - **Fullscreen (experimental):** KUAL → *Start fullscreen (experimental)*
   shows the page in a small Kindle web app of its own (`kindle/extensions/kindlehome/app/`)
   instead of the browser. It is the same mechanism the Kindle store and apps
@@ -247,7 +248,9 @@ seconds (60) without a touch. A background script on the Kindle does this. It
 reads the touchscreen's input events alongside the Kindle's own software, so
 the touch that wakes the light also counts as a normal tap on the page. Set
 `KV_LIGHT_AUTO=0` in `config.sh` to turn this off, and `KV_FRONTLIGHT` for a
-fixed level instead. If the light doesn't react, *Collect diagnostics* lists
+fixed level instead. While you type into a page, the page tells the server
+every 20 seconds, and the light stays on even if keyboard taps don't reach
+the script (it asks the server with `wget` before turning off). If the light doesn't react, *Collect diagnostics* lists
 the input devices, and `KV_TOUCH_DEV` can name the right one.
 
 ### 24/7 notes

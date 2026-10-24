@@ -25,6 +25,7 @@ log "collecting diagnostics into $OUT"
     lipc-probe -v com.lab126.powerd 2>&1 | grep -i -e fl -e light
     ls /sys/devices/system/ 2>&1 | grep -i fl
     echo "light control: $(cat "$LIGHTSTATE" 2>/dev/null) pid $(cat "$LIGHTPID" 2>/dev/null)"
+    echo "typing reported by the page: $(typing_age || echo "server not reachable") s ago"; ls -l /usr/bin/wget /bin/wget 2>&1
     echo "=== fullscreen app";  cat "$MODEFILE" 2>&1; cat "$EXT/app/config.js" 2>&1
     sqlite3 "$APPREG" "SELECT * FROM properties WHERE handlerId = '$APP_ID';" 2>&1
     echo "=== mesquite apps";   ls /var/local/mesquite/ 2>&1

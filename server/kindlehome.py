@@ -1358,7 +1358,9 @@ JS = r"""
   var CFG = %%CFG%%;
   // CFG.list: fragment URL to re-sync from (list page).
   // CFG.home: page to go back to after CFG.homeAfter idle seconds (detail page).
+  // CFG.start: where the periodic full reload goes (the dashboard, if there is one).
   var IDLE = 15000, loadedAt = now(), lastAct = CFG.home ? now() : 0, lastRefresh = now(), busy = false;
+  var lastTyping = 0;
   var current = null;
 
   function now() { return new Date().getTime(); }
@@ -1594,10 +1596,16 @@ JS = r"""
     if (typing && t - lastAct > 600000) {   // abandoned input: clear it after 10 min
       title.value = ""; if (a && a.blur) a.blur(); typing = false;
     }
+    // Tell the server: the Kindle's light script keeps the front light on while this is recent
+    // (keyboard taps don't always reach its touch reader).
+    if (typing && t - lastTyping > 20000) { lastTyping = t; xhr("POST", "/typing", "", function () {}); }
     if (typing || t - lastAct < IDLE) return;
     if (CFG.home && t - lastAct > CFG.homeAfter * 1000) { location.href = CFG.home; return; }
     // Full reload now and then: frees browser memory and clears e-ink ghosting.
-    if (t - loadedAt > CFG.reloadHours * 3600000) { location.reload(); return; }
+    if (t - loadedAt > CFG.reloadHours * 3600000) {
+      if (CFG.start && location.pathname !== CFG.start) location.href = CFG.start; else location.reload();
+      return;
+    }
     if (t - lastRefresh >= CFG.refresh * 1000) refresh();
   }, 5000);
 
@@ -1840,6 +1848,7 @@ class Renderer:
         pager = ('<div id="pager" style="display:none"><a id="pgup" href="#"><span class="tri up"></span></a>'
                  '<a id="pgdn" href="#"><span class="tri dn"></span></a></div>')
         cfg.update(version=PAGE_VERSION, refresh=self.cfg.refresh, reloadHours=6, error=self.t["error"],
+                   start="/" if self.cfg.dashboard else None,
                    offline=self.t["offline"],
                    save=self.t["save"], cancel=self.t["cancel"])
         return pager + "<script>" + JS.replace("%%CFG%%", json.dumps(cfg)) + "</script>"
@@ -2139,6 +2148,7 @@ class Handler(BaseHTTPRequestHandler):
     emoji = None  # EmojiCache
     calendar = None  # Calendar (None if not configured)
     render = None
+    last_typing = 0.0  # time.monotonic() of the page's last "typing" report
 
     def log_message(self, fmt, *args):
         sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
@@ -2201,6 +2211,10 @@ class Handler(BaseHTTPRequestHandler):
         path = url.path.rstrip("/") or "/"
         if path == "/healthz":
             return self._send(200, "ok", "text/plain")
+        if method == "GET" and path == "/typing":
+            # for the Kindle's light script (no key: it only tells how long ago someone typed)
+            age = int(time.monotonic() - Handler.last_typing) if Handler.last_typing else -1
+            return self._send(200, str(age), "text/plain")
         self._query = urllib.parse.parse_qs(url.query)
         if not self._authorized(self._query):
             return self._send(403, self.render.message_page("403", self.render.t["forbidden"]))
@@ -2214,6 +2228,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(502, self.render.message_page(self.render.t["error"], str(e)))
 
     def _route(self, method, path):
+        if method == "POST" and path == "/typing":
+            Handler.last_typing = time.monotonic()
+            return self._send(204, "")
         if method == "GET" and path == "/":
             if self.cfg.dashboard:
                 return self._send(200, self.render.dashboard_page(self._tiles()))

@@ -29,18 +29,31 @@ show_bars() {
     lipc-set-prop com.lab126.pillow disableEnablePillow enable
 }
 
+# Starting an app while it runs makes the Kindle show an "application error" popup
+# (this happened with the nightly relaunch), so stop it first. That's also a real
+# restart, which frees its memory.
+stop_if_active() {
+    if [ "$(active_app)" = "$1" ]; then
+        log "stopping $1 to restart it"
+        lipc-set-prop com.lab126.appmgrd stop "$1"
+        # wait until it's really gone (a fixed 5 s may be too short), at most 30 s
+        n=0
+        while [ "$(active_app)" = "$1" ] && [ "$n" -lt 30 ]; do
+            sleep 1
+            n=$((n + 1))
+        done
+        log "stopped $1 after ${n}s"
+        sleep 3
+    fi
+}
+
 open_page() {
     if [ "$(cat "$MODEFILE" 2>/dev/null)" = "fullscreen" ]; then
-        # Starting the app while it runs makes the Kindle show an "application error"
-        # popup, so stop it first (that's also a real restart, which frees its memory).
-        if [ "$(active_app)" = "$APP_ID" ]; then
-            log "stopping fullscreen app to restart it"
-            lipc-set-prop com.lab126.appmgrd stop "$APP_ID"
-            sleep 5
-        fi
+        stop_if_active "$APP_ID"
         log "opening fullscreen app ($KV_URL)"
         lipc-set-prop com.lab126.appmgrd start "app://$APP_ID"
     else
+        stop_if_active com.lab126.browser
         log "opening $KV_URL in the browser"
         lipc-set-prop com.lab126.appmgrd start "app://com.lab126.browser?view=$KV_URL"
     fi
@@ -95,6 +108,12 @@ find_touch_dev() {
          /^H:/ && name ~ /zforce|touch|cyttsp|elan|pixcir|cypress/ && match($0, /event[0-9]+/) {
              print "/dev/input/" substr($0, RSTART, RLENGTH); exit
          }' /proc/bus/input/devices 2>/dev/null
+}
+
+# Seconds since the page last reported typing (asked from the server), empty if unknown.
+typing_age() {
+    base=$(echo "$KV_URL" | sed -n 's#^\(http://[^/?]*\).*#\1#p')
+    [ -n "$base" ] && wget -q -T 5 -O - "$base/typing" 2>/dev/null
 }
 
 light_running() {

@@ -27,7 +27,13 @@ light "${KV_LIGHT_ON:-18}" on
         sleep 5
         last=$(cat "$TOUCHFILE" 2>/dev/null || echo 0)
         if [ "$(cat "$LIGHTSTATE")" = "on" ] && [ $(($(date +%s) - last)) -ge "${KV_LIGHT_TIMEOUT:-60}" ]; then
-            light "${KV_LIGHT_OFF:-0}" off
+            # Taps on the on-screen keyboard don't always reach us: ask the page whether
+            # someone is typing (it reports that every 20 s while an input is in use).
+            age=$(typing_age)
+            case "$age" in
+                ''|-*|*[!0-9]*) light "${KV_LIGHT_OFF:-0}" off ;;
+                *) if [ "$age" -lt 30 ]; then date +%s > "$TOUCHFILE"; else light "${KV_LIGHT_OFF:-0}" off; fi ;;
+            esac
         fi
     done
 ) &

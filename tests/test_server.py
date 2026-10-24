@@ -746,6 +746,20 @@ class EmojiTests(ServerTest):
         self.assertEqual(self.req("/emoji/..%2fetc.png")[0], 404)
 
 
+class TypingTests(ServerTest):
+    def test_typing_report(self):
+        self.assertEqual(self.req("/typing")[1], "-1")   # never reported
+        self.assertEqual(self.req("/typing", data={})[0], 204)
+        self.assertIn(self.req("/typing")[1], ("0", "1"))
+
+
+class StartPageTests(ServerTest):
+    kitchenowl = True
+
+    def test_periodic_reload_goes_to_dashboard(self):
+        self.assertIn('"start": "/"', self.req("/p/1")[1])
+
+
 class ScriptTests(unittest.TestCase):
     def test_adding_restarts_idle_timer(self):
         # resetting the activity time to 0 made the page jump back to the dashboard right away
