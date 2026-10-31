@@ -56,8 +56,10 @@ log "collecting diagnostics into $OUT"
     echo "=== syslog (app, memory)"
     grep -i -e mesquite -e appmgr -e oom -e "out of memory" -e killed -e segfault -e kindlehome \
         /var/log/messages 2>/dev/null | tail -n 150
+    echo "=== log files";     ls -l /var/log /var/local/log 2>&1 | head -n 60
     echo "=== dmesg";         dmesg 2>&1 | tail -n 60
     echo "=== last crash report"; cat "$CRASHFILE" 2>&1 | head -n 400
+    echo "=== recent events"; tail -n 300 "$EVENTFILE" 2>&1
     echo "=== KindleHome log"; tail -n 200 "$LOG" 2>&1
 } > "$OUT" 2>&1
 log "diagnostics done"

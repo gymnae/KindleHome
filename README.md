@@ -229,8 +229,14 @@ After a reboot, run *Start todo display* again (it is not started automatically)
     Kindle home screen, then KUAL → *Stop* to end the display.
   - If the app closes without *Exit* (a crash), the watchdog opens it again
     within a minute. It saves what the system logged at that moment to
-    `kindlehome-crash.txt` on the Kindle drive, and *Collect diagnostics*
-    includes it too. Once an hour the log also records the battery level and
+    `kindlehome-crash.txt` on the Kindle drive (the one before is kept as
+    `kindlehome-crash.prev.txt`), and *Collect diagnostics* includes it too.
+    The app also closes when someone taps the status bar at the top and then
+    the toolbar's search bar, which opens the Kindle home screen. The report
+    lists the last taps and marks that case as "not a crash". Warnings, errors,
+    popups and app exits from the system log are also copied every 5 minutes
+    to `kindlehome-events.txt` (the system log itself is rotated often).
+    Once an hour the log also records the battery level and
     memory use.
   - If the app stays blank, set `KV_APP_MODE=top` in `config.sh` and start again.
   - If it does not work at all, use the normal *Start todo display* (browser).
