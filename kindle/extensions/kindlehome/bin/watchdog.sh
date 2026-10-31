@@ -13,6 +13,7 @@ last=$(date +%s)
 active=""
 minutes=0
 reopened=0
+syslogpos=$(record_events "")
 while true; do
     sleep 60
     minutes=$((minutes + 1))
@@ -25,10 +26,17 @@ while true; do
         # (A restart from "Reload page" also passes the home screen: not a crash.)
         if [ "$active" = "$APP_ID" ] && [ "$now_app" = "$HOME_APP" ] && [ ! -f "$RESTARTING" ] \
            && [ "$(cat "$MODEFILE" 2>/dev/null)" = fullscreen ] && [ "$(app_state)" = r ]; then
-            crash_report "fullscreen app closed unexpectedly"
+            # Tapping the status bar drops down the Kindle toolbar, and its search bar opens
+            # the home screen: a clean exit, not a crash (still reopened, it's a kiosk).
+            taps=$(taps_before_pause)
+            case " $taps " in
+                *" search_bar "*) why="fullscreen app left via the Kindle toolbar (taps: $taps), not a crash" ;;
+                *) why="fullscreen app closed unexpectedly${taps:+ (taps before: $taps)}" ;;
+            esac
+            crash_report "$why"
             if [ "$reopened" -lt 10 ]; then
                 reopened=$((reopened + 1))
-                log "fullscreen app closed unexpectedly, reopening ($reopened); details in $CRASHFILE"
+                log "$why, reopening ($reopened); details in $CRASHFILE"
                 open_page
             else
                 log "fullscreen app closed unexpectedly again, giving up after $reopened reopens"
@@ -36,6 +44,8 @@ while true; do
         fi
         active=$now_app
     fi
+    # every 5 minutes: copy new warnings and popups from the syslog (see record_events)
+    [ $((minutes % 5)) -eq 0 ] && syslogpos=$(record_events "$syslogpos" "$now_app")
     lipc-set-prop com.lab126.powerd preventScreenSaver 1
     if [ "${KV_LIGHT_AUTO:-1}" = "1" ] && ! light_running; then
         log "light control not running, restarting"

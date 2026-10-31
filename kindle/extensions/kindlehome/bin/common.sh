@@ -184,12 +184,96 @@ status_line() {
          "free ${avail}kB, page${rss:- not running}"
 }
 
+# The newest rotated syslog (tinyrot rotates often; once it did so seconds before a crash
+# and the current file held almost nothing), empty if none.
+prev_syslog() {
+    ls -t /var/local/log/messages* /var/log/messages.* 2>/dev/null | head -n 1
+}
+
+# syslog_tail <lines>: the end of the syslog, continuing into the rotated file if needed.
+syslog_tail() {
+    prev=$(prev_syslog)
+    {
+        case "$prev" in
+            *.gz) gunzip -c "$prev" ;;
+            ?*)   cat "$prev" ;;
+        esac
+        cat /var/log/messages
+    } 2>/dev/null | tail -n "$1"
+}
+
+EVENTFILE=/mnt/us/kindlehome-events.txt
+
+# file_size <file>: its size in bytes (from the directory entry, the file isn't read).
+file_size() {
+    set -- $(ls -ln "$1" 2>/dev/null)
+    echo "${5:-0}"
+}
+
+# record_events <offset> <active app>: called every few minutes by the watchdog with the
+# syslog size from its last call; prints the current size for the next call. Copies warnings,
+# errors, popups and app exits logged since then to $EVENTFILE (visible over USB), with 5 lines
+# of context, before log rotation loses them: e.g. which program causes an "application error"
+# popup at night. Cheap on old hardware: only the new part of the syslog is read, no temp
+# files, and the Kindle drive is written only when something matched.
+record_events() {
+    size=$(file_size /var/log/messages)
+    echo "$size"
+    [ -n "$1" ] || return 0   # first call: just remember where we are
+    [ "$size" -eq "$1" ] && return 0
+    if [ "$size" -gt "$1" ]; then
+        max=$((size - $1))    # lines written while we read are left for the next call
+        tail -c +$(($1 + 1)) /var/log/messages
+    else                      # rotated: the rest of the old file, then the new one
+        max=-1
+        prev=$(prev_syslog)
+        case "$prev" in
+            *.gz) gunzip -c "$prev" | tail -c +$(($1 + 1)) ;;
+            ?*)   tail -c +$(($1 + 1)) "$prev" ;;
+        esac
+        cat /var/log/messages
+    fi 2>/dev/null | awk -v max="$max" -v f="$EVENTFILE" \
+        -v hdr="=== $(date '+%F %T') active app: $2" '
+        function out(l) { if (!n++) print hdr >> f; print l >> f }
+        max >= 0 { got += length($0) + 1; if (got > max) exit }
+        { i = NR; b[i % 6] = $0 }
+        /getactiveAppInt|lipc:axstime|cannot find callback function|button-(press|release)/ { next }
+        /^[0-9]+:[0-9]+ [^ ]+: [EWC] / || /pillow|[Aa]lert|[Dd]ialog|abnormal_exit=1|exited_app|[Cc]rash|[Ee]rror/ {
+            s = i - 5; if (s <= last) s = last + 1
+            if (last && s > last + 1) out("...")
+            for (j = s; j <= i; j++) out(b[j % 6])
+            last = i
+        }
+        END { exit n ? 0 : 1 }' || return 0
+    # something was written: keep the file small
+    if [ "$(file_size "$EVENTFILE")" -gt 400000 ]; then
+        tail -n 3000 "$EVENTFILE" > "$EVENTFILE.tmp" && mv -f "$EVENTFILE.tmp" "$EVENTFILE"
+    fi
+}
+
+# What was tapped right before the app was last paused, e.g. "simple_alert default_status_bar
+# search_bar" (pillow logs each tap's target): the toolbar's search bar opens the home screen.
+taps_before_pause() {
+    syslog_tail 1000 | awk -v app="$APP_ID" '
+        /button-press:target=/ { s = $0; sub(/.*button-press:target=/, "", s); sub(/[,:].*/, "", s); t[NR] = s }
+        index($0, "lipc_id=" app ",state=PAUSE_SENT") {
+            last = ""
+            for (i = NR - 40; i < NR; i++) if (i in t) last = last " " t[i]
+        }
+        END { sub(/^ /, "", last); print last }'
+}
+
 # What the system logged around an unexpected exit, for troubleshooting (visible over USB).
+# The previous report is kept as kindlehome-crash.prev.txt.
 crash_report() {
+    [ -f "$CRASHFILE" ] && mv -f "$CRASHFILE" "${CRASHFILE%.txt}.prev.txt"
     {
         echo "=== $(date '+%F %T') $1"
         echo "=== status";       status_line
-        echo "=== syslog";       tail -n 300 /var/log/messages 2>&1
+        echo "=== taps before the app was paused"; taps_before_pause
+        echo "=== popups and taps (pillow)"
+        syslog_tail 3000 | grep -i -e pillow -e alert | tail -n 40
+        echo "=== syslog (rotated file: $(prev_syslog))"; syslog_tail 300
         echo "=== dmesg";        dmesg 2>&1 | tail -n 60
         echo "=== KindleHome log"; tail -n 40 "$LOG" 2>&1
     } > "$CRASHFILE" 2>&1
