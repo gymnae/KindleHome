@@ -1262,7 +1262,7 @@ body.dash #status{min-height:0}
 #add .in{display:table-cell;width:100%;vertical-align:middle}
 #add .go{display:table-cell;padding-left:8px;vertical-align:middle}
 #add input[type=text]{width:100%;font:inherit;padding:10px;border:3px solid #000;border-radius:0;-webkit-appearance:none;background:#fff;color:#000}
-#add button{font:inherit;font-weight:bold;padding:10px 18px;border:3px solid #000;background:#000;color:#fff;border-radius:0;-webkit-appearance:none}
+#add .go button{font:inherit;font-weight:bold;padding:10px 18px;border:3px solid #000;background:#000;color:#fff;border-radius:0;-webkit-appearance:none}
 ul{list-style:none;margin:0;padding:0}
 .row{display:table;width:100%;border-bottom:1px solid #000}
 .row form{display:table-cell;width:1%;vertical-align:middle;padding:8px 10px 8px 0;margin:0}
@@ -1590,15 +1590,25 @@ JS = r"""
   document.addEventListener("mousedown", touch, false);
   document.addEventListener("keydown", touch, false);
 
+  // Tell the server someone is typing: the Kindle's light script keeps the front light on
+  // while this is recent (keyboard taps don't always reach its touch reader).
+  function reportTyping(minGap) {
+    var t = now();
+    if (t - lastTyping > minGap) { lastTyping = t; xhr("POST", "/typing", "", function () {}); }
+  }
+  // At once when an input is tapped: the keyboard opens and its taps may go unseen.
+  document.addEventListener("focus", function (ev) {
+    if (ev.target && /^(INPUT|SELECT|TEXTAREA)$/.test(ev.target.tagName)) { touch(); reportTyping(3000); }
+  }, true);
+
   setInterval(function () {
-    var t = now(), a = document.activeElement, title = $("title");
-    var typing = (a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) || (title && title.value !== "");
+    var t = now(), a = document.activeElement, title = $("title"), chips = $("chips");
+    var typing = (a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) || (title && title.value !== "")
+      || (chips && chips.style.display === "block" && t - lastAct < 60000);   // picking a chip
     if (typing && t - lastAct > 600000) {   // abandoned input: clear it after 10 min
-      title.value = ""; if (a && a.blur) a.blur(); typing = false;
+      title.value = ""; if (a && a.blur) a.blur(); resetChips(); typing = false;
     }
-    // Tell the server: the Kindle's light script keeps the front light on while this is recent
-    // (keyboard taps don't always reach its touch reader).
-    if (typing && t - lastTyping > 20000) { lastTyping = t; xhr("POST", "/typing", "", function () {}); }
+    if (typing) reportTyping(15000);
     if (typing || t - lastAct < IDLE) return;
     if (CFG.home && t - lastAct > CFG.homeAfter * 1000) { location.href = CFG.home; return; }
     // Full reload now and then: frees browser memory and clears e-ink ghosting.

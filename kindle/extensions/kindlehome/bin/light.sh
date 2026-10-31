@@ -21,20 +21,41 @@ light() {
 date +%s > "$TOUCHFILE"
 light "${KV_LIGHT_ON:-18}" on
 
+# The touch controller's interrupt count (/proc/interrupts), empty if not found. It goes up
+# with every tap, also those on the on-screen keyboard, which don't always reach our reader.
+touch_irqs() {
+    awk '{ l = tolower($0) }
+         l ~ /zforce|touch|cyttsp|elan|pixcir|cypress/ {
+             for (i = 2; i <= NF && $i ~ /^[0-9]+$/; i++) s += $i; print s; exit
+         }' /proc/interrupts 2>/dev/null
+}
+
 # timer: lights off once the last touch is old enough
 (
+    irq=$(touch_irqs)
+    irq_at=$(date +%s)
+    [ -n "$irq" ] && log "light: also counting touch interrupts ($(awk 'tolower($0) ~ /zforce|touch|cyttsp|elan|pixcir|cypress/' /proc/interrupts | head -n 1))"
     while true; do
         sleep 5
+        [ "$(cat "$LIGHTSTATE")" = "on" ] || continue
+        now=$(date +%s)
         last=$(cat "$TOUCHFILE" 2>/dev/null || echo 0)
-        if [ "$(cat "$LIGHTSTATE")" = "on" ] && [ $(($(date +%s) - last)) -ge "${KV_LIGHT_TIMEOUT:-60}" ]; then
-            # Taps on the on-screen keyboard don't always reach us: ask the page whether
-            # someone is typing (it reports that every 20 s while an input is in use).
-            age=$(typing_age)
-            case "$age" in
-                ''|-*|*[!0-9]*) light "${KV_LIGHT_OFF:-0}" off ;;
-                *) if [ "$age" -lt 30 ]; then date +%s > "$TOUCHFILE"; else light "${KV_LIGHT_OFF:-0}" off; fi ;;
-            esac
+        if [ -n "$irq" ]; then
+            n=$(touch_irqs)
+            [ "$n" != "$irq" ] && { irq=$n; irq_at=$now; }
         fi
+        [ $((now - last)) -ge "${KV_LIGHT_TIMEOUT:-60}" ] || continue
+        # Touches seen only as interrupts count too, but for at most 10 minutes after the last
+        # real one (in case the controller also interrupts without being touched).
+        if [ -n "$irq" ] && [ $((now - irq_at)) -lt "${KV_LIGHT_TIMEOUT:-60}" ] && [ $((now - last)) -lt 600 ]; then
+            continue
+        fi
+        # Ask the page whether someone is typing (it reports that while an input is in use).
+        age=$(typing_age)
+        case "$age" in
+            ''|-*|*[!0-9]*) light "${KV_LIGHT_OFF:-0}" off ;;
+            *) if [ "$age" -lt 30 ]; then date +%s > "$TOUCHFILE"; else light "${KV_LIGHT_OFF:-0}" off; fi ;;
+        esac
     done
 ) &
 
