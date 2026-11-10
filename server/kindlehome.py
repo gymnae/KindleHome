@@ -259,15 +259,23 @@ class Vikunja(JsonApi):
             views = None  # Vikunja < 0.24 has no project views
 
         if views is not None:
-            # list and table views return plain tasks; kanban would return buckets
+            # list and table views return plain tasks; kanban would return buckets.
+            # Take the first one as Vikunja's sidebar orders them.
+            views = sorted(views, key=lambda v: (float(v.get("position") or 0), v.get("id", 0)))
             for kind in ("list", "table"):
                 view = next((v for v in views if v.get("view_kind") == kind), None)
                 if view:
-                    # sorting by position makes Vikunja return each task's position in this view
                     items = self.get_all(f"/projects/{project_id}/views/{view['id']}/tasks",
                                          {"filter": "done = false", "sort_by": ["position", "id"],
                                           "order_by": ["asc", "asc"]})
-                    return _flatten_buckets(items)
+                    tasks = _flatten_buckets(items)
+                    # This is exactly the drag and drop order of the view. Keep it as is: tasks
+                    # without a stored position come last here but are reported as position 0,
+                    # so sorting by the "position" field would move them to the top.
+                    for rank, t in enumerate(tasks):
+                        if isinstance(t, dict):
+                            t["_rank"] = rank
+                    return tasks
             return self.get_all("/tasks/all", {"filter": f"done = false && project = {int(project_id)}"})
 
         return self.get_all(f"/projects/{project_id}/tasks", {
@@ -922,7 +930,8 @@ def sort_key(mode):
     if mode == "priority":
         return lambda t: (prio(t), *due(t), t.get("id", 0))
     if mode == "position":
-        return lambda t: (float(t.get("position") or 0), t.get("id", 0))
+        # _rank: the order Vikunja's list view returned (see Vikunja.open_tasks)
+        return lambda t: (t.get("_rank", float("inf")), float(t.get("position") or 0), t.get("id", 0))
     if mode == "title":
         return lambda t: ((t.get("title") or "").lower(), t.get("id", 0))
     if mode == "created":

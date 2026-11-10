@@ -102,8 +102,10 @@ class FakeVikunja:
                 if p == "/api/v1/projects/1/views/10/tasks":
                     assert q["filter"] == ["done = false"], q
                     fake.last_query = q
-                    items = [fake.with_relations(t) for t in fake.tasks.values()
-                             if t["project_id"] == 1 and not t["done"]]
+                    # like Vikunja: stored position, tasks without one last (and reported as 0)
+                    open_ = sorted((t for t in fake.tasks.values() if t["project_id"] == 1 and not t["done"]),
+                                   key=lambda t: (t.get("position") is None, t.get("position") or 0, t["id"]))
+                    items = [dict(fake.with_relations(t), position=t.get("position") or 0) for t in open_]
                     page, per = int(q["page"][0]), 2  # force pagination
                     pages = max(1, -(-len(items) // per))
                     return self.reply(200, items[(page - 1) * per: page * per],
@@ -522,6 +524,16 @@ class OrderTests(ServerTest):
         _, body, _ = self.req("/p/1/list")
         self.assertLess(body.index('data-id="2"'), body.index('data-id="1"'))
         self.assertEqual(self.fake.last_query["sort_by"], ["position", "id"])
+
+    def test_tasks_without_position_keep_vikunja_order(self):
+        # Vikunja puts tasks without a stored position last, but reports them as position 0
+        self.fake.tasks[1]["position"] = 300.0
+        self.fake.tasks[2]["position"] = 100.5
+        self.fake.tasks[6] = {"id": 6, "title": "New", "done": False, "project_id": 1}
+        self.fake.next_id = 7
+        _, body, _ = self.req("/p/1/list")
+        order = [int(i) for i in re.findall(r'data-id="(\d+)"', body) if int(i) in (1, 2, 6)]
+        self.assertEqual(order, [2, 1, 6])
 
 
 class QuickAddTests(ServerTest):
